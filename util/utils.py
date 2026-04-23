@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 from util.enums import FailureType
 
 @dataclass
@@ -173,7 +173,16 @@ def create_request_to_response_map(
 
     for batch_id, batch in batch_id_to_batch_map.items():
         batch_response = batch_id_to_responses_map[batch_id]
-        temp_request_id_to_response_map = {int(response["id"]): response for response in batch_response}
+        try:
+            temp_request_id_to_response_map = {int(response["id"]): response for response in batch_response}
+        except Exception as e:
+            if failures is not None:
+                failures.append({
+                    "type": FailureType.INVALID_DATA,
+                    "statusCode": 200,
+                    "message": f"Invalid data - Unable to convert id to integer: {e}"
+                })
+                continue
 
         for request in batch:
             if request["id"] not in temp_request_id_to_response_map:
@@ -209,3 +218,17 @@ def create_request_to_response_map(
             request_to_response_map_list.append(RequestResponsePair(request=request, response=temp_request_id_to_response_map[request["id"]]))
 
     return request_to_response_map_list
+
+def get_batch_responses_map(responses: List[Dict[str, Any]], logger: Optional[Callable[[str], None]] = None):
+    batch_responses_map = {}
+    for resp in responses:
+        if "id" in resp:
+            try:
+                batch_responses_map[int(resp["id"])] = resp
+            except ValueError:
+                if logger:
+                    logger(f"Warning: Received response with non-numeric ID: {resp['id']}")
+        else:
+            if logger:
+                logger("Warning: Received response missing 'id' field")
+    return batch_responses_map

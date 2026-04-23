@@ -3,28 +3,31 @@ from typing import Any, Dict, List
 
 @dataclass
 class ScanConfig:
-  """Holds configuration for the current scan job."""
+    """Holds configuration for the current scan job."""
 
-  tenant_id: str
-  client_ids: List[str]
-  client_secrets: List[str]
-  user_source: str
-  csv_path: str
-  scan_email: bool
-  scan_contact: bool
-  scan_calendar: bool
-  concurrency: int
-  load_multiplier: int
-  retries: int
-  backoff: int
-  eta_max_users: int
-  parallel_batches: int
-  hierarchial_crawl_batch_limit: int = 4
+    tenant_id: str
+    client_ids: List[str]
+    client_secrets: List[str]
+    user_source: str
+    csv_path: str
+    scan_email: bool
+    scan_contact: bool
+    scan_calendar: bool
+    scan_in_place_archives: bool
+    scan_group_mail_boxes: bool
+    concurrency: int
+    load_multiplier: int
+    retries: int
+    backoff: int
+    eta_max_users: int
+    parallel_batches: int
+    hierarchial_crawl_batch_limit: int = 4
 
 @dataclass
 class RequestResponsePair:
     request: Dict[str, Any]
     response: Dict[str, Any]
+
 
 RETRYABLE_ERROR_CODES = [429, 500, 502, 503, 504]
 
@@ -105,7 +108,6 @@ def get_failed_responses(responses: Dict[str, Any]) -> List[Dict[str, Any]]:
 def get_failed_responses_that_can_be_retried(responses: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [response for response in responses.values() 
             if "body" in response and response["status"] in RETRYABLE_ERROR_CODES]
-
 
 def get_relative_url(url: str, base_url: str) -> str:
     if url.startswith(base_url):

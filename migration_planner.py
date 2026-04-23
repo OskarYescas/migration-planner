@@ -73,6 +73,11 @@ from requests.adapters import HTTPAdapter
 import urllib3
 from urllib3.util.retry import Retry
 
+from estimators.eo_in_place_archive_estimator import EOInPlaceArchiveEstimator
+from estimators.eo_group_mailbox_estimator import EOGroupMailBoxEstimator
+from util.connectors import TokenManager, UrlInvoker
+from util.utils import ScanConfig
+
 # =================================================================================
 # CONSTANTS
 # =================================================================================
@@ -136,29 +141,12 @@ ETA_CONTACT_USER_LIMIT = 1
 ETA_CONTACT_BATCH_SIZE = 10
 ETA_CONTACT_BATCH_TIME = 25
 
+ENABLE_IN_PLACE_ARCHIVE_ETA = True
+ENABLE_GROUP_MAILBOX_ETA = True
+
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-
-@dataclass
-class ScanConfig:
-  """Holds configuration for the current scan job."""
-
-  tenant_id: str
-  client_ids: List[str]
-  client_secrets: List[str]
-  user_source: str
-  csv_path: str
-  scan_email: bool
-  scan_contact: bool
-  scan_calendar: bool
-  concurrency: int
-  load_multiplier: int
-  retries: int
-  backoff: int
-  eta_max_users: int
-  parallel_batches: int
-
 
 # =================================================================================
 # BACKEND HELPERS
@@ -207,182 +195,6 @@ class ResourceMonitor(threading.Thread):
     avg_ram = sum(self.ram_readings) / len(self.ram_readings)
     max_ram = max(self.ram_readings)
     return avg_cpu, max_cpu, avg_ram, max_ram
-
-
-class TokenManager:
-  """Manages Microsoft Graph API tokens with rotation and concurrency.
-
-  Handles authentication for multiple client applications to distribute
-  load and avoid rate limiting.
-  """
-
-  def __init__(
-      self,
-      tenant_id: str,
-      client_ids: List[str],
-      client_secrets: List[str],
-      concurrency: int,
-      retries: int,
-      backoff: int,
-  ):
-    self.tenant_id = tenant_id
-    self.apps = list(zip(client_ids, client_secrets))
-    self.concurrency = concurrency
-    self.retries = retries
-    self.backoff = backoff
-    self.token_queue: queue.Queue = queue.Queue()
-    self.session = self._create_retry_session()
-    self.tokens: List[Dict[str, Any]] = []
-
-  def _create_retry_session(self) -> requests.Session:
-    """Creates a requests session with retry logic."""
-    session = requests.Session()
-    session.verify = False
-    retries = Retry(
-        total=self.retries,
-        backoff_factor=self.backoff,
-        status_forcelist=[500, 502, 503, 504],
-        allowed_methods=["GET", "POST"],
-    )
-    total_pool_size = len(self.apps) * self.concurrency * 2 + 100
-    adapter = HTTPAdapter(
-        max_retries=retries,
-        pool_connections=total_pool_size,
-        pool_maxsize=total_pool_size,
-    )
-    session.mount("https://", adapter)
-    return session
-
-  def authenticate_all(
-      self,
-      logger: Callable[[str], None],
-      required_scopes: Optional[List[str]] = None,
-  ) -> None:
-    """Authenticates all configured applications and verifies permissions.
-
-    Args:
-        logger: Function to log messages.
-        required_scopes: List of permission scopes required (e.g.,
-          ['User.Read.All']).
-
-    Raises:
-        Exception: If authentication fails or required permissions are missing.
-    """
-    logger(f"Authenticating {len(self.apps)} apps...")
-    url = TOKEN_URL_TEMPLATE.format(self.tenant_id)
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-    for client_id, client_secret in self.apps:
-      data = {
-          "client_id": client_id,
-          "scope": "https://graph.microsoft.com/.default",
-          "client_secret": client_secret,
-          "grant_type": "client_credentials",
-      }
-      try:
-        resp = self.session.post(url, headers=headers, data=data)
-        resp.raise_for_status()
-
-        token_resp = resp.json()
-        token = token_resp["access_token"]
-        expires_in = token_resp.get("expires_in", 3599)
-
-        token_data = {
-            "token": token,
-            "expires_at": time.time() + int(expires_in) - 900,
-            "client_id": client_id,
-            "client_secret": client_secret,
-        }
-
-        if required_scopes:
-          try:
-            # Decode JWT Payload (No signature verification needed for client-side check)
-            payload_part = token.split(".")[1]
-            payload_part += "=" * (-len(payload_part) % 4)
-            decoded_bytes = base64.urlsafe_b64decode(payload_part)
-            payload = json.loads(decoded_bytes)
-
-            granted_roles = set(payload.get("roles", []))
-            missing = [s for s in required_scopes if s not in granted_roles]
-            if missing:
-              raise Exception(
-                  f"Missing Required Permissions for App {client_id[:5]}...: "
-                  f"{', '.join(missing)}\n"
-                  f"Current Assigned Roles: {', '.join(granted_roles)}\n"
-                  "Please grant these Application permissions in Azure Portal."
-              )
-          except Exception as e:
-            logger(f"Token Verification Failed: {e}")
-            raise
-
-        self.tokens.append(token_data)
-        for _ in range(self.concurrency):
-          self.token_queue.put(token_data)
-        logger(f"App {client_id[:5]}... authenticated & verified.")
-
-      except requests.exceptions.RequestException as e:
-        error_text = ""
-        if e.response is not None:
-          error_text = f": {e.response.text}"
-        logger(f"Auth Failed for app {client_id}: {e}{error_text}")
-        raise Exception(
-            "Authentication Failed. Check Client ID/Secret/Tenant. Details:"
-            f" {error_text}"
-        )
-      except Exception as e:
-        logger(f"Error for app {client_id}: {e}")
-        raise
-
-  def refresh_token_data(
-      self, token_data: Dict[str, Any], logger: Callable[[str], None]
-  ) -> bool:
-    """Refreshes a specific token dictionary in-place."""
-    url = TOKEN_URL_TEMPLATE.format(self.tenant_id)
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    data = {
-        "client_id": token_data["client_id"],
-        "scope": "https://graph.microsoft.com/.default",
-        "client_secret": token_data["client_secret"],
-        "grant_type": "client_credentials",
-    }
-    try:
-      resp = self.session.post(url, headers=headers, data=data)
-      resp.raise_for_status()
-      token_resp = resp.json()
-
-      token_data["token"] = token_resp["access_token"]
-      expires_in = token_resp.get("expires_in", 3599)
-      token_data["expires_at"] = time.time() + int(expires_in) - 900
-      return True
-    except Exception as e:
-      logger(f"Failed to refresh token: {e}")
-      return False
-
-  def get_valid_token_slot(
-      self, logger: Callable[[str], None]
-  ) -> Dict[str, Any]:
-    """Retrieves an available token, refreshing it if nearing expiration."""
-    token_data = self.token_queue.get()
-
-    if time.time() > token_data["expires_at"]:
-      logger(
-          f"Token expiring soon for App {token_data['client_id'][:5]}...,"
-          " refreshing..."
-      )
-      if self.refresh_token_data(token_data, logger):
-        logger(
-            "Successfully refreshed token for App"
-            f" {token_data['client_id'][:5]}..."
-        )
-    return token_data
-
-  def return_token_slot(self, token_data: Dict[str, Any]) -> None:
-    """Returns a token data object to the queue after use."""
-    self.token_queue.put(token_data)
-
-  def get_session(self) -> requests.Session:
-    """Returns the shared requests session."""
-    return self.session
 
 
 def execute_batch_request(
@@ -803,6 +615,8 @@ class MigrationEstimatorTool(ctk.CTk):
     self.scan_email = ctk.BooleanVar(value=True)
     self.scan_contact = ctk.BooleanVar(value=True)
     self.scan_calendar = ctk.BooleanVar(value=True)
+    self.scan_in_place_archives = ctk.BooleanVar(value=True)
+    self.scan_group_mail_boxes = ctk.BooleanVar(value=True)
     self.concurrency = ctk.IntVar(value=10)
     self.load_multiplier = ctk.IntVar(value=1)
     self.retries = ctk.IntVar(value=MAX_RETRIES)
@@ -1061,7 +875,23 @@ class MigrationEstimatorTool(ctk.CTk):
         corner_radius=4,
         fg_color=COLOR_PRIMARY,
         border_color=COLOR_TEXT_SUB,
-        state="disabled",
+        # state="disabled",
+    ).pack(side="left", padx=10)
+    ctk.CTkCheckBox(
+        scan_options_frame,
+        text="In-Place Archives",
+        variable=self.scan_in_place_archives,
+        corner_radius=4,
+        fg_color=COLOR_PRIMARY,
+        border_color=COLOR_TEXT_SUB,
+    ).pack(side="left", padx=10)
+    ctk.CTkCheckBox(
+        scan_options_frame,
+        text="Group Mailboxes",
+        variable=self.scan_group_mail_boxes,
+        corner_radius=4,
+        fg_color=COLOR_PRIMARY,
+        border_color=COLOR_TEXT_SUB,
     ).pack(side="left", padx=10)
     ctk.CTkLabel(
         self.adv_frame,
@@ -1278,6 +1108,12 @@ class MigrationEstimatorTool(ctk.CTk):
       )
       self.create_stat_card(
           card_frame, "Contacts", f"{data['total_contacts']:,}", "📞"
+      )
+      self.create_stat_card(
+          card_frame, "In-Place Archives", f"{data['total_in_place_archives']:,}", "🗃️"
+      )
+      self.create_stat_card(
+          card_frame, "Group Mailbox Mails", f"{data['total_group_mailboxes']:,}", "👥📧"
       )
 
       # Timeline
@@ -1896,9 +1732,11 @@ class MigrationEstimatorTool(ctk.CTk):
     emails_str = self.format_metric(batch["total_emails"])
     events_str = self.format_metric(batch["total_events"])
     contacts_str = self.format_metric(batch["total_contacts"])
+    in_place_archive_str = self.format_metric(batch["total_in_place_archives"])
+    group_mailbox_str = self.format_metric(batch["total_group_mailboxes"])
     info = (
         f"{batch['name']} - {users_str} 👥  |  {emails_str} 📩  |  {events_str}"
-        f" 📅  |  {contacts_str} 📞"
+        f" 📅  |  {contacts_str} 📞 |  {in_place_archive_str} 🗃️ |  {group_mailbox_str} 👥📧"
     )
     ctk.CTkLabel(
         f,
@@ -2015,9 +1853,11 @@ class MigrationEstimatorTool(ctk.CTk):
     icon = self.spinner_chars[idx % len(self.spinner_chars)]
     self.spinner_indices[source] = idx + 1
     if source in self.prog_widgets:
-      self.prog_widgets[source]["icon"].configure(
-          text=icon, text_color=COLOR_PRIMARY
-      )
+      widget = self.prog_widgets[source]["icon"]
+      if widget.winfo_exists():  # <-- Add this check!
+        widget.configure(
+            text=icon, text_color=COLOR_PRIMARY
+        ) 
     self.after(80, lambda: self.animate_spinner(source))
 
   def update_progress(self, msg):
@@ -2031,21 +1871,27 @@ class MigrationEstimatorTool(ctk.CTk):
         count = msg.get("count", 0)
         status = msg.get("status", "Scanning...")
         if "users" in self.prog_widgets:
-          self.prog_widgets["users"]["lbl"].configure(
-              text=f"{count} users found"
-          )
+          widget = self.prog_widgets["users"]["lbl"]
+          if widget.winfo_exists():
+            widget.configure(
+                text=f"{count} users found"
+            )
           if not self.spinners_active.get("users"):
             self.spinners_active["users"] = True
             self.animate_spinner("users")
         if status == "Done":
           self.spinners_active["users"] = False
           if "users" in self.prog_widgets:
-            self.prog_widgets["users"]["icon"].configure(
-                text="✓", text_color=COLOR_SUCCESS
-            )
-            self.prog_widgets["users"]["bar"].stop()
-            self.prog_widgets["users"]["bar"].configure(mode="determinate")
-            self.prog_widgets["users"]["bar"].set(1.0)
+            widget_icon = self.prog_widgets["users"]["icon"]
+            if widget_icon.winfo_exists():
+              widget_icon.configure(
+                  text="✓", text_color=COLOR_SUCCESS
+              )
+            widget_bar = self.prog_widgets["users"]["bar"]
+            if widget_bar.winfo_exists():
+              widget_bar.stop()
+              widget_bar.configure(mode="determinate")
+              widget_bar.set(1.0)
       elif mtype == "phase_status":
         source = msg.get("source")
         status = msg.get("status")
@@ -2055,20 +1901,26 @@ class MigrationEstimatorTool(ctk.CTk):
         elif status == "complete":
           self.spinners_active[source] = False
           if source in self.prog_widgets:
-            self.prog_widgets[source]["icon"].configure(
-                text="✓", text_color=COLOR_SUCCESS
-            )
-            if self.prog_widgets[source]["bar"].cget("mode") == "indeterminate":
-              self.prog_widgets[source]["bar"].stop()
-              self.prog_widgets[source]["bar"].configure(mode="determinate")
-            self.prog_widgets[source]["bar"].set(1.0)
-            if source == "plan_generation":
-              self.prog_widgets[source]["lbl"].configure(
-                  text=(
-                      "Plan generated, please wait while we prepare the final"
-                      " dashboard..."
-                  )
+            widget_icon = self.prog_widgets[source]["icon"]
+            if widget_icon.winfo_exists():
+              widget_icon.configure(
+                  text="✓", text_color=COLOR_SUCCESS
               )
+            widget_bar = self.prog_widgets[source]["bar"]
+            if widget_bar.winfo_exists():
+              if widget_bar.cget("mode") == "indeterminate":
+                widget_bar.stop()
+                widget_bar.configure(mode="determinate")
+              widget_bar.set(1.0)
+            if source == "plan_generation":
+              widget_lbl = self.prog_widgets[source]["lbl"]
+              if widget_lbl.winfo_exists():
+                widget_lbl.configure(
+                    text=(
+                        "Plan generated, please wait while we prepare the final"
+                        " dashboard..."
+                    )
+                )
       elif mtype == "scan_progress":
         source = msg.get("source")
         val = msg.get("progress", 0.0)
@@ -2077,27 +1929,42 @@ class MigrationEstimatorTool(ctk.CTk):
         users_fail = msg.get("failed", 0)
         users_tot = msg.get("total", 0)
         if source in self.prog_widgets:
-          self.prog_widgets[source]["bar"].set(val)
+          widget = self.prog_widgets[source]["bar"]
+          if widget.winfo_exists():
+            widget.set(val)
           if source == "calendars":
             extra = msg.get("extra_text", "")
-            self.prog_widgets[source]["lbl"].configure(
-                text=(
-                    f"Users: {users_proc - users_fail} succeeded , {users_fail}"
-                    f" failed | {extra}"
-                )
-            )
+            widget_lbl = self.prog_widgets[source]["lbl"]
+            if widget_lbl.winfo_exists():
+              widget_lbl.configure(
+                  text=(
+                      f"Users: {users_proc - users_fail} succeeded , {users_fail}"
+                      f" failed | {extra}"
+                  )
+              )
           elif source == "plan_generation":
-            self.prog_widgets[source]["lbl"].configure(
-                text=msg.get("extra_text", "")
-            )
+            widget_lbl = self.prog_widgets[source]["lbl"]
+            if widget_lbl.winfo_exists():
+              widget_lbl.configure(
+                  text=msg.get("extra_text", "")
+              )
           else:
-            label = "Emails" if source == "messages" else "Contacts"
-            self.prog_widgets[source]["lbl"].configure(
-                text=(
-                    f"Users: {users_proc - users_fail} succeeded , {users_fail}"
-                    f" failed | {label}: {cumulative:,}"
-                )
-            )
+            if source == "messages":
+              label = "Emails"
+            elif source == "contacts":
+              label = "Contacts"
+            elif source == "in_place_archives":
+              label = "In Place Archive Count"
+            elif source == "group_mail_boxes":
+              label = "Group Mail Count"
+            widget_lbl = self.prog_widgets[source]["lbl"]
+            if widget_lbl.winfo_exists():
+              widget_lbl.configure(
+                  text=(
+                      f"Users: {users_proc - users_fail} succeeded , {users_fail}"
+                      f" failed | {label}: {cumulative:,}"
+                  )
+              )
       elif mtype == "complete":
         self.show_results_content(msg["data"])
       elif mtype == "error":
@@ -2158,6 +2025,15 @@ class MigrationEstimatorTool(ctk.CTk):
       self.create_progress_row(
           self.scan_container, "calendars", "Scanning Calendars"
       )
+    if self.scan_in_place_archives.get():
+      self.create_progress_row(
+          self.scan_container, "in_place_archives", "Scanning In-Place Archives"
+      )
+    if self.scan_group_mail_boxes.get():
+      self.create_progress_row(
+          self.scan_container, "group_mail_boxes", "Scanning Group Mailboxes"
+      )
+
     self.create_progress_row(
         self.scan_container, "plan_generation", "Generating Migration Plan"
     )
@@ -2231,6 +2107,8 @@ class MigrationEstimatorTool(ctk.CTk):
         scan_email=self.scan_email.get(),
         scan_contact=self.scan_contact.get(),
         scan_calendar=self.scan_calendar.get(),
+        scan_in_place_archives=self.scan_in_place_archives.get(),
+        scan_group_mail_boxes=self.scan_group_mail_boxes.get(),
         concurrency=self.concurrency.get(),
         load_multiplier=self.load_multiplier.get(),
         retries=self.retries.get(),
@@ -2267,6 +2145,8 @@ class MigrationEstimatorTool(ctk.CTk):
     have_email = False
     have_contact = False
     have_calendar = False
+    have_in_place_archives = False
+    have_group_mail_boxes = False
 
     # 1. Parse CSV if applicable
     if config.user_source == "csv":
@@ -2336,6 +2216,12 @@ class MigrationEstimatorTool(ctk.CTk):
         required_scopes.append("Contacts.Read")
       if config.scan_calendar and not have_calendar:
         required_scopes.append("Calendars.Read")
+      if config.scan_group_mail_boxes and not have_group_mail_boxes:
+        required_scopes.append("MailboxSettings.Read")
+        if not (config.scan_email and not have_email):          # If Email Scan is diabled then add Mail.Read as otherwise Mail.Read is alreay added
+          required_scopes.append("Mail.Read")
+      if config.scan_in_place_archives and not have_in_place_archives and not (config.scan_email and not have_email):
+        required_scopes.append("Mail.Read")
 
       manager.authenticate_all(self.log_msg, required_scopes=required_scopes)
     else:
@@ -2380,6 +2266,8 @@ class MigrationEstimatorTool(ctk.CTk):
     have_email = "Email Count" in sample
     have_contact = "Contact Count" in sample
     have_calendar = "Calendar Count" in sample and "Event Count" in sample
+    have_in_place_archives = "In Place Archive Count" in sample
+    have_group_mail_boxes = "Group Mail Count" in sample
 
     def safe_int(val):
       try:
@@ -2397,6 +2285,8 @@ class MigrationEstimatorTool(ctk.CTk):
           "Contact Count": 0,
           "Calendar Count": 0,
           "Event Count": 0,
+          "In Place Archive Count": 0,
+          "Group Mail Count": 0,
       }
       if key in existing_data:
         src = existing_data[key]
@@ -2414,8 +2304,88 @@ class MigrationEstimatorTool(ctk.CTk):
         "contacts": sum(r["Contact Count"] for r in csv_rows),
         "calendars": sum(r["Calendar Count"] for r in csv_rows),
         "events": sum(r["Event Count"] for r in csv_rows),
+        "in_place_archives": sum(r["In Place Archive Count"] for r in csv_rows),
+        "group_mail_boxes": sum(r["Group Mail Count"] for r in csv_rows),
     }
     return csv_rows, stats
+
+  def run_batch_scan(
+    self, 
+    resource_type: str,
+    config: ScanConfig,
+    user_chunks: List[List[Dict[str, Any]]],
+    manager: Optional[TokenManager],
+    stats: Dict[str, int],
+    total_users: int
+  ): 
+    processed_users = 0
+    phase_total = 0
+    url_invoker = UrlInvoker(
+        manager,
+        config.retries,
+        config.backoff,
+        1,
+        0.5
+    )
+    executor = ThreadPoolExecutor(max_workers=config.concurrency)
+    estimator: Estimator = None
+    if resource_type == "in_place_archives":
+      estimator = EOInPlaceArchiveEstimator(
+        manager,
+        config,
+        url_invoker,
+        stop_event=self.stop_scan_event
+      )
+    elif resource_type == "group_mail_boxes":
+      estimator = EOGroupMailBoxEstimator(
+        manager,
+        config,
+        url_invoker,
+        stop_event=self.stop_scan_event
+      )
+
+    future_to_chunk_map: Dict[Future, List] = {}
+    future_to_failures_map: Dict[Future, List[Dict[str, Any]]] = {}
+    for chunk in user_chunks:
+      # TODO Add logic to log failures too
+      failures = []
+      future = executor.submit(estimator.calculate_resource_count, 
+          {"user_ids" : [row["User ID"] for row in chunk]})
+      future_to_chunk_map[future] = chunk
+      future_to_failures_map[future] = failures
+
+    for f in as_completed(future_to_chunk_map):
+      chunk = future_to_chunk_map[f]
+      chunk_result = f.result()
+     
+      # Update Progress
+      processed_users += len(chunk)
+      chunk_total = sum(value for user_id, value in chunk_result.items())
+      phase_total += chunk_total
+      users_failed = len(future_to_failures_map[f])
+      prog = processed_users / total_users if total_users > 0 else 0
+      self.ui_update(
+        "scan_progress",
+        source=resource_type,
+        progress=prog,
+        cumulative=phase_total,
+        processed=processed_users,
+        failed=users_failed,
+        total=total_users,
+        extra_text="",
+      )
+
+      # Update stats
+      for user in chunk:
+        if resource_type == "in_place_archives":
+          user["In Place Archive Count"] = chunk_result.get(user["User ID"], 0)
+        elif resource_type == "group_mail_boxes":
+          user["Group Mail Count"] = chunk_result.get(user["User ID"], 0)
+      
+      stats[resource_type] += chunk_total
+    
+    executor.shutdown()
+    estimator.shutdown()
 
   def _run_scan_phases(
       self,
@@ -2437,9 +2407,13 @@ class MigrationEstimatorTool(ctk.CTk):
     has_email_data = any(r["Email Count"] > 0 for r in csv_rows)
     has_contact_data = any(r["Contact Count"] > 0 for r in csv_rows)
     has_calendar_data = any(r["Calendar Count"] > 0 for r in csv_rows)
+    has_in_place_archives_data = any(r["In Place Archive Count"] > 0 for r in csv_rows)
+    has_group_mailboxes_data = any(r["Group Mail Count"] > 0 for r in csv_rows)
     failed_emails = []
     failed_contacts = []
     failed_calendars = []
+    failed_in_place_archives = []
+    failed_group_mailboxes = []
 
     can_scan = manager is not None
 
@@ -2507,6 +2481,32 @@ class MigrationEstimatorTool(ctk.CTk):
         )
         self.ui_update("phase_status", source="calendars", status="complete")
 
+    if config.scan_in_place_archives:
+      if can_scan and (not has_in_place_archives_data or config.user_source == "tenant"):
+        self.ui_update("phase_status", source="in_place_archives", status="running")
+        self.run_batch_scan(
+            "in_place_archives", 
+            config,
+            user_chunks, manager, stats, total_users
+        )
+        self.ui_update("phase_status", source="in_place_archives", status="complete")
+      else:
+        # To update for csv flow
+        pass
+
+    if config.scan_group_mail_boxes:
+      if can_scan and (not has_group_mailboxes_data or config.user_source == "tenant"):
+        self.ui_update("phase_status", source="group_mail_boxes", status="running")
+        self.run_batch_scan(
+            "group_mail_boxes", 
+            config,
+            user_chunks, manager, stats, total_users
+        )
+        self.ui_update("phase_status", source="group_mail_boxes", status="complete")
+      else:
+        # To update for csv flow
+        pass
+
     # --- LOG FAILED USERS SUMMARY ---
     if failed_emails or failed_calendars or failed_contacts:
       self.log_msg("\n" + "=" * 40)
@@ -2528,6 +2528,9 @@ class MigrationEstimatorTool(ctk.CTk):
         for f in failed_contacts:
           self.log_msg(f"User: {f['user']} | Cause: {f['cause']}")
         self.log_msg("")  # Add blank line
+      
+      # TODO Add failure logging here too for in place archives and group mailboxes
+
       self.log_msg("=" * 40)
 
   def _generate_final_report(
@@ -2551,7 +2554,7 @@ class MigrationEstimatorTool(ctk.CTk):
     time.sleep(0.5)
 
     df = pd.DataFrame(csv_rows)
-    df, batches, total_eta, buckets = self.calculate_migration_batches(df)
+    df, batches, total_eta, buckets = self.calculate_migration_batches(df)      # TODO Check
 
     monitor.stop()
     monitor.join()
@@ -2566,6 +2569,8 @@ class MigrationEstimatorTool(ctk.CTk):
     self.log_msg(
         f"Emails: {stats['emails']} | Contacts: {stats['contacts']} |"
         f" Calendars: {stats['calendars']} | Events: {stats['events']}"
+        f" In Place Archives: {stats['in_place_archives']} |"
+        f" Group Mailboxes: {stats['group_mail_boxes']}"
     )
     self.log_msg(f"System: {total_cpu_cores} Cores, {total_ram_gb:.1f}GB RAM")
     self.log_msg(f"CPU Avg/Peak: {avg_cpu:.1f}% / {max_cpu:.1f}%")
@@ -2594,6 +2599,10 @@ class MigrationEstimatorTool(ctk.CTk):
       final_columns.append("Contact Count")
     if config.scan_calendar:
       final_columns.extend(["Calendar Count", "Calendar Event Count"])
+    if config.scan_in_place_archives:
+      final_columns.append("In Place Archive Count")
+    if config.scan_group_mail_boxes:
+      final_columns.append("Group Mail Count")
 
     final_columns = [c for c in final_columns if c in df_output.columns]
     df_output = df_output[final_columns]
@@ -2633,11 +2642,15 @@ class MigrationEstimatorTool(ctk.CTk):
         "total_contacts": stats["contacts"],
         "total_calendars": stats["calendars"],
         "total_events": stats["events"],
+        "total_in_place_archives": stats["in_place_archives"],
+        "total_group_mailboxes": stats["group_mail_boxes"],
         "total_items": (
             stats["emails"]
             + stats["contacts"]
             + stats["calendars"]
             + stats["events"]
+            + stats["in_place_archives"]
+            + stats["group_mail_boxes"]
         ),
         "total_eta": total_eta,
         "batches": batches,
@@ -2754,9 +2767,10 @@ class MigrationEstimatorTool(ctk.CTk):
 
     return phase_failures
 
+  # TODO Use In-Place archive numbers and group mailbox numbers to calculate
   def calculate_migration_batches(self, df):
     # Ensure numeric columns
-    target_cols = ["Email Count", "Contact Count", "Event Count"]
+    target_cols = ["Email Count", "Contact Count", "Event Count", "In Place Archive Count", "Group Mail Count"]
     for col in target_cols:
       if col not in df.columns:
         df[col] = 0
@@ -2766,7 +2780,7 @@ class MigrationEstimatorTool(ctk.CTk):
     # 1. Sort Users (Descending - Heaviest first for optimal packing)
     df["SortMetric"] = df.apply(
         lambda x: max(
-            x["Email Count"], (x["Event Count"] + x["Contact Count"])
+            (x["Email Count"] + x["Group Mail Count"]), (x["Event Count"] + x["Contact Count"]), x["In Place Archive Count"]
         ),
         axis=1,
     )
@@ -2808,7 +2822,14 @@ class MigrationEstimatorTool(ctk.CTk):
     fallback_plan = None
     min_batches_seen = float("inf")
 
+    # TODO Add support for eta from inplace archives and group mailboxes too
     # Helper: Calculate ETA for subset
+    config = self._get_scan_configuration()
+    if ENABLE_IN_PLACE_ARCHIVE_ETA:
+      in_place_archive_estimator = EOInPlaceArchiveEstimator(None, config, None)
+    if ENABLE_GROUP_MAILBOX_ETA:
+      group_mail_box_estimator = EOGroupMailBoxEstimator(None, config, None)
+
     def get_batch_eta(subset_df):
       eta_email = 0.0
       if ENABLE_EMAIL_ETA:
@@ -2837,7 +2858,35 @@ class MigrationEstimatorTool(ctk.CTk):
             ETA_CONTACT_BATCH_SIZE,
             ETA_CONTACT_BATCH_TIME,
         )
-      return max(eta_email, eta_calendar + eta_contact)
+      eta_in_place_archive = 0.0
+      if ENABLE_IN_PLACE_ARCHIVE_ETA:
+        eta_in_place_archive = in_place_archive_estimator.calculate_migration_eta(
+          {
+            "item_counts": subset_df["In Place Archive Count"].tolist(),
+            "global_limit": ETA_EMAIL_GLOBAL_LIMIT,
+            "user_limit": ETA_EMAIL_USER_LIMIT,
+            "batch_size": ETA_EMAIL_BATCH_SIZE,
+            "batch_time": ETA_EMAIL_BATCH_TIME,
+          }
+        )
+      eta_group_mail_box = 0.0
+      if ENABLE_GROUP_MAILBOX_ETA:
+        eta_group_mail_box = group_mail_box_estimator.calculate_migration_eta(
+          {
+            "item_counts": subset_df["Group Mail Count"].tolist(),
+            "global_limit": ETA_EMAIL_GLOBAL_LIMIT,
+            "user_limit": ETA_EMAIL_USER_LIMIT,
+            "batch_size": ETA_EMAIL_BATCH_SIZE,
+            "batch_time": ETA_EMAIL_BATCH_TIME,
+          }
+        )
+
+      if ENABLE_IN_PLACE_ARCHIVE_ETA:
+        in_place_archive_estimator.shutdown()
+      if ENABLE_GROUP_MAILBOX_ETA:
+        group_mail_box_estimator.shutdown()
+
+      return max(eta_email, eta_calendar + eta_contact, eta_in_place_archive, eta_group_mail_box)
 
     # 2. Iterate through candidates
     for target_hours in candidate_hours:
@@ -2889,6 +2938,8 @@ class MigrationEstimatorTool(ctk.CTk):
             "total_emails": int(final_subset["Email Count"].sum()),
             "total_contacts": int(final_subset["Contact Count"].sum()),
             "total_events": int(final_subset["Event Count"].sum()),
+            "total_in_place_archives": int(final_subset["In Place Archive Count"].sum()),
+            "total_group_mailboxes": int(final_subset["Group Mail Count"].sum()),
             "eta": w_eta,
         })
         start_idx = end_idx

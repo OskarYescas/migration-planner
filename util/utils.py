@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+from util.enums import FailureType
 
 @dataclass
 class ScanConfig:
@@ -124,7 +125,9 @@ def process_pagination_responses(
     responses: List[Dict[str, Any]],
     orig_map: Dict[str, Any],
     grouping_key: str,
-    base_url: str
+    base_url: str,
+    failures: Optional[List[Dict[str, Any]]] = None,
+    is_partial: bool = False
 ) -> List[Dict[str, Any]]:
     next_items = []
     batch_responses_map = {int(resp["id"]): resp for resp in responses}
@@ -150,12 +153,21 @@ def process_pagination_responses(
                     next_item = dict(req["headers"])
                     next_item["url"] = relative_url
                     next_items.append(next_item)
+            elif "body" in resp and "error" in resp["body"] and failures is not None:
+                failures.append({
+                    "mailboxId": key,
+                    "isPartial": is_partial,
+                    "type": FailureType.FAILURE_STATUS_CODE_ERROR,
+                    "statusCode" : resp["status"],
+                    "message": resp["body"]["error"]["message"]
+                })
                     
     return next_items
 
 def create_request_to_response_map(
         batch_id_to_batch_map: Dict[int, List[Dict[str, Any]]], 
-        batch_id_to_responses_map: Dict[int, List[Dict[str, Any]]]
+        batch_id_to_responses_map: Dict[int, List[Dict[str, Any]]], 
+        failures: Optional[List[Dict[str, str]]] = None
     ) -> List[RequestResponsePair]:
     request_to_response_map_list: List[RequestResponsePair] = []
 
@@ -165,9 +177,35 @@ def create_request_to_response_map(
 
         for request in batch:
             if request["id"] not in temp_request_id_to_response_map:
+                if failures is not None:
+                    failures.append({
+                        "userId": request["headers"]["userId"] if "userId" in request["headers"] else None,
+                        "isPartial": False,
+                        "type": FailureType.NOT_FOUND,
+                        "message": "No response received for the request"
+                    })
                 continue        # TODO Check why and add logs for possible failure
             if temp_request_id_to_response_map[request["id"]]["status"] < 200 or temp_request_id_to_response_map[request["id"]]["status"] >= 300:
-                continue        # TODO Add logic to log the failures
+                if failures is not None:
+                    error_message = (
+                        temp_request_id_to_response_map[request["id"]]["body"][
+                            "error"
+                        ]["message"]
+                        if "body" in temp_request_id_to_response_map[request["id"]]
+                        and "error"
+                        in temp_request_id_to_response_map[request["id"]][
+                            "body"
+                        ]
+                        else "Unknown Error"
+                    )                    
+                    failures.append({
+                        "userId": request["headers"]["userId"] if "userId" in request["headers"] else None,
+                        "isPartial": False,
+                        "type": FailureType.FAILURE_STATUS_CODE_ERROR,
+                        "statusCode" : temp_request_id_to_response_map[request["id"]]["status"],
+                        "message": f"The request failed with status code {temp_request_id_to_response_map[request["id"]]["status"]} and error message: {error_message}"
+                    })
+                continue
             request_to_response_map_list.append(RequestResponsePair(request=request, response=temp_request_id_to_response_map[request["id"]]))
 
     return request_to_response_map_list

@@ -183,7 +183,7 @@ class EOInPlaceArchiveEstimator(Estimator):
                         "isPartial": False,
                         "type": FailureType.NOT_FOUND,
                         "statusCode": None,
-                        "message": "In-place archive mailbox not found for the user."
+                        "message": "No response found for folder API."
                     })
                         
         while pending_next_items and not self.is_hard_stop_requested():

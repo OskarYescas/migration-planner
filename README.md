@@ -147,6 +147,7 @@ To scan your tenant, you need to register an app in the Microsoft Entra ID (form
     *   `Mail.Read` (To count emails)
     *   `Contacts.Read` (To count contacts)
     *   `Calendars.Read` (To count calendar events)
+    *   `MailboxFolder.Read.All` (To count emails in in-place archives)
     *   `MailboxSettings.Read` (To distinguish user and group mailboxes)
 4.  Click **Add permissions**.
 5.  **Crucial Step**: Click **"Grant admin consent for [Your Organization]"** and confirm "Yes". All status icons should turn green.

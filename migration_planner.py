@@ -2035,12 +2035,13 @@ class MigrationEstimatorTool(ctk.CTk):
         required_scopes.append("MailboxSettings.Read")
         if not (config.scan_email and not have_email):          # If Email Scan is diabled then add Mail.Read as otherwise Mail.Read is alreay added
           required_scopes.append("Mail.Read")
-      if config.scan_in_place_archives and not have_in_place_archives and not (config.scan_email and not have_email):
-        required_scopes.append("Mail.Read")
+      if config.scan_in_place_archives and not have_in_place_archives:
+        required_scopes.append("MailboxFolder.Read.All")
 
       manager.authenticate_all(self.log_msg, required_scopes=required_scopes)
       if one_token_per_app_manager:
-        one_token_per_app_manager.authenticate_all(self.log_msg, required_scopes=["User.Read.All", "MailboxSettings.Read", "Mail.Read"])
+        one_token_per_app_manager.authenticate_all(self.log_msg, required_scopes=[
+          "User.Read.All", "MailboxFolder.Read.All"])
     else:
       self.log_msg(
           "Skipping Authentication (All required data present in CSV)."
@@ -2298,6 +2299,8 @@ class MigrationEstimatorTool(ctk.CTk):
     failed_calendars = []
     failed_in_place_archives = []
     failed_group_mailboxes = []
+    partial_in_place_archive_failures = []
+    partial_group_mail_box_failures = []
 
     can_scan = manager is not None
 

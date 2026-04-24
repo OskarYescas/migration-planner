@@ -312,6 +312,9 @@ class UrlInvoker():
                     for response_item in batch_responses:
                         req_id = response_item.get("id")
                         status = response_item.get("status")
+                        
+                        if "body" not in response_item or not response_item["body"]:
+                            logger(f"WARNING: Response item {req_id} in {context} has missing or empty body! Status: {status}")
                         if status == 429:
                             headers_429 = response_item.get("headers", {})
                             try:
@@ -331,6 +334,9 @@ class UrlInvoker():
                             if req_id in current_batch_map:
                                 next_retry_requests.append(current_batch_map[req_id])
                                 retry_after_delay = max(retry_after_delay, 2)
+                        elif "error" in response_item["body"]:
+                            # Failsafe for uncaught errors.
+                            logger(f"Error encountered in batch response in {context}: {response_item['body']['error']}")
                         else:
                             successful_responses[req_id] = response_item
 

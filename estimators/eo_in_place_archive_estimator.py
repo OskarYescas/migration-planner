@@ -17,7 +17,8 @@ class EOInPlaceArchiveEstimator(Estimator):
             url_invoker: UrlInvoker, 
             child_folder_url_invoker: UrlInvoker, 
             logger: Optional[Callable[[str], None]] = None, 
-            stop_event: Optional[threading.Event] = None
+            stop_event: Optional[threading.Event] = None,
+            use_delta_api: bool = False
         ):
         super().__init__()
         self.config = config
@@ -25,8 +26,11 @@ class EOInPlaceArchiveEstimator(Estimator):
         self.child_folder_url_invoker = child_folder_url_invoker
         self.logger = logger
         self.stop_event = stop_event
+        self.use_delta_api = use_delta_api
+        
         self.archive_executor = ThreadPoolExecutor(max_workers=self.config.concurrency)
-        self.tree_executor = ThreadPoolExecutor(max_workers=self.config.concurrency)
+        if self.use_delta_api is False:
+            self.tree_executor = ThreadPoolExecutor(max_workers=self.config.concurrency)
 
     def calculate_migration_eta(self, data: Dict[str, Any]) -> float:
         return super().calculate_migration_eta(data)
@@ -128,7 +132,12 @@ class EOInPlaceArchiveEstimator(Estimator):
 
         # Extract all the top level folders. This is done separately as a different API is used for top level folders compared to child folders
         mail_box_id_maps = [{"mailboxId": mail_box_id} for mail_box_id in mail_box_ids]
-        folder_api = "admin/exchange/mailboxes/{mailboxId}/folders?$select=id,childFolderCount,totalItemCount&$top=999"     # TODO Add support for a configurable page size
+        folder_api = ""
+        
+        if self.use_delta_api is True:
+            folder_api = "admin/exchange/mailboxes/{mailboxId}/folders/delta?$select=id,childFolderCount,totalItemCount"
+        else:
+            folder_api = "admin/exchange/mailboxes/{mailboxId}/folders?$select=id,childFolderCount,totalItemCount&$top=999"
 
         top_level_folders: Dict[str, List[Dict[str, Any]]] = {}      # Map of Mail box to top level folder list.
         mail_box_batches = create_batches(folder_api, mail_box_id_maps, self.config.parallel_batches, True)
@@ -221,24 +230,31 @@ class EOInPlaceArchiveEstimator(Estimator):
         for mail_box_id in mail_box_ids:
             # Synchronization not needed for archived_mail_count as a whole as we would only be doing GET operations on the keys.
             archived_mail_count[mail_box_id] = AtomicInt(0)
-        
-        # Maintaining this count to ensure that every child folder is parsed before returning the final count. 
-        active_thread_count = AtomicInt(0)
-        condition = threading.Condition()
-        
-        if not self.is_hard_stop_requested():
-            self.submit_child_folder_requests_to_executor (
-                condition,
-                top_level_folders,
-                archived_mail_count,
-                active_thread_count,
-                failures
-            )
-        
-        # Non blocking wait to ensure that the parsing is complete before returning the result. Note that it is always expected to be non-zero unless the parsing is over as we increment the count before decrementing it sequentially for a particular folder.
-        while active_thread_count.get_value() > 0:
-            with condition:
-                condition.wait()
+
+        parseable_sub_folders = self.get_parseable_folders_and_update_counts(
+            top_level_folders   ,
+            archived_mail_count,
+            failures
+        )
+
+        if self.use_delta_api is False:
+            # Maintaining this count to ensure that every child folder is parsed before returning the final count. 
+            active_thread_count = AtomicInt(0)
+            condition = threading.Condition()
+
+            if not self.is_hard_stop_requested():
+                self.submit_child_folder_requests_to_executor (
+                    condition,
+                    parseable_sub_folders,
+                    archived_mail_count,
+                    active_thread_count,
+                    failures
+                )
+            
+            # Non blocking wait to ensure that the parsing is complete before returning the result. Note that it is always expected to be non-zero unless the parsing is over as we increment the count before decrementing it sequentially for a particular folder.
+            while active_thread_count.get_value() > 0:
+                with condition:
+                    condition.wait()
 
         mail_count: Dict[str, int] = {}
         for mail_box_id, count in archived_mail_count.items():
@@ -361,9 +377,15 @@ class EOInPlaceArchiveEstimator(Estimator):
             for batch, responses in all_initial_responses:
                 group_responses_by_key(child_folders, batch, responses, "mailboxId")
 
+            parseable_sub_folders = self.get_parseable_folders_and_update_counts(
+                child_folders,
+                archived_mail_count,
+                failures
+            )
+
             self.submit_child_folder_requests_to_executor (
                 condition,
-                child_folders,
+                parseable_sub_folders,
                 archived_mail_count,
                 active_thread_count,
                 failures
@@ -373,15 +395,12 @@ class EOInPlaceArchiveEstimator(Estimator):
             with condition:
                 condition.notify_all()
 
-    def submit_child_folder_requests_to_executor (
+    def get_parseable_folders_and_update_counts(
         self,
-        condition: threading.Condition,
         child_folders: Dict[str, List[Dict[str, Any]]],
-        archived_mail_count: Dict[str, AtomicInt],
-        active_thread_count: AtomicInt,
-        failures: List[Dict[str, Any]]
-    ) -> None:
-
+        archived_mail_count: List[AtomicInt],
+        failures: List[Dict[str, Any]],
+    ) -> Dict[str, List[Dict[str, Any]]]:
         parseable_sub_folders: Dict[str, List[Dict[str, Any]]] = {}
         for mail_box_id, sub_folders in child_folders.items():
             for sub_folder in sub_folders:
@@ -422,13 +441,25 @@ class EOInPlaceArchiveEstimator(Estimator):
                         parseable_sub_folders[mail_box_id] = []
                     parseable_sub_folders[mail_box_id].append(sub_folder)
 
-        if len(parseable_sub_folders) > 0 and not self.is_hard_stop_requested():
-            try:
-                active_thread_count.increment()
+        return parseable_sub_folders
 
-                #TODO Use a retry template and failure callback instead of try, except
-                self.tree_executor.submit(self.parse_and_count_mails_in_child_folders, condition, parseable_sub_folders, archived_mail_count, active_thread_count, failures)
-            except:
-                active_thread_count.decrement()
-                with condition:
-                    condition.notify_all()
+    def submit_child_folder_requests_to_executor (
+        self,
+        condition: threading.Condition,
+        parseable_sub_folders: Dict[str, List[Dict[str, Any]]],
+        archived_mail_count: Dict[str, AtomicInt],
+        active_thread_count: AtomicInt,
+        failures: List[Dict[str, Any]],
+    ) -> None:
+        if not parseable_sub_folders or len(parseable_sub_folders) == 0 or self.is_hard_stop_requested():
+            return
+
+        try:
+            active_thread_count.increment()
+
+            #TODO Use a retry template and failure callback instead of try, except
+            self.tree_executor.submit(self.parse_and_count_mails_in_child_folders, condition, parseable_sub_folders, archived_mail_count, active_thread_count, failures)
+        except:
+            active_thread_count.decrement()
+            with condition:
+                condition.notify_all()

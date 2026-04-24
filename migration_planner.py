@@ -2170,7 +2170,8 @@ class MigrationEstimatorTool(ctk.CTk):
         url_invoker,
         child_folder_url_invoker,
         logger=self.log_msg,
-        stop_event=self.stop_scan_event
+        stop_event=self.stop_scan_event,
+        use_delta_api=True
       )
     elif resource_type == "group_mail_boxes":
       estimator = EOGroupMailBoxEstimator(

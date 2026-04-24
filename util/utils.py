@@ -36,7 +36,8 @@ def create_batches(
     api: str, 
     placeholder_list: List[Dict[str, Any]], 
     batch_size: int,
-    useIdentificationHeaders: bool = False
+    useIdentificationHeaders: bool = False,
+    deltaAPIPageSize: Optional[int] = None
 ) -> List[List[Dict[str, Any]]]:
     batches: List[List[Dict[str, Any]]] = []
     batch_requests: List[Dict[str, Any]] = []
@@ -45,6 +46,8 @@ def create_batches(
     headers = {
         "ConsistencyLevel": "eventual"
     }
+    if deltaAPIPageSize is not None:
+        headers["Prefer"] = f"odata.maxpagesize={deltaAPIPageSize}"
 
     for placeholder in placeholder_list:
         if (req_id >= batch_size):

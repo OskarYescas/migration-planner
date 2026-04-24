@@ -11,13 +11,11 @@ GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
 class EOGroupMailBoxEstimator(Estimator):
     def __init__(self,
-        manager: TokenManager, 
         config: ScanConfig, 
         url_invoker: UrlInvoker, 
         logger: Optional[Callable[[str], None]] = None, 
         stop_event: Optional[threading.Event] = None
     ):
-        self.manager = manager
         self.config = config
         self.url_invoker = url_invoker
         self.logger = logger

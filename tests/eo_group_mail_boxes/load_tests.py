@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 from estimators.eo_group_mailbox_estimator import EOGroupMailBoxEstimator
-from util.connectors import TokenManager, UrlInvoker
+from util.connectors import UrlInvoker
 from util.utils import ScanConfig
 from util.enums import FailureType
 import json
@@ -35,7 +35,6 @@ class TestEOGroupMailboxesLoad(unittest.TestCase):
             print(f"Loaded test data from {cls.data_path}")
 
     def setUp(self):
-        self.mock_token_manager = MagicMock(spec=TokenManager)
         self.mock_url_invoker = MagicMock(spec=UrlInvoker)
         
         self.config = ScanConfig(
@@ -59,7 +58,6 @@ class TestEOGroupMailboxesLoad(unittest.TestCase):
         )
         
         self.estimator = EOGroupMailBoxEstimator(
-            manager=self.mock_token_manager,
             config=self.config,
             url_invoker=self.mock_url_invoker
         )

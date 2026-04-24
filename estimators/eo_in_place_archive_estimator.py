@@ -1,7 +1,6 @@
 from typing import Any, Callable, Dict, List, Optional
 
 from estimators.estimator import Estimator
-from util.connectors import TokenManager
 from util.connectors import UrlInvoker
 from util.utils import ScanConfig, group_responses_by_key, process_pagination_responses, get_relative_url, get_batch_responses_map, create_batches
 import threading
@@ -9,27 +8,25 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from util.atomic_int import AtomicInt
 from util.enums import FailureType
 
-GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
-
-TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{0}/oauth2/v2.0/token"
 GRAPH_BETA_URL = "https://graph.microsoft.com/beta"
 
 class EOInPlaceArchiveEstimator(Estimator):
     def __init__(
             self, 
-            manager: TokenManager, 
             config: ScanConfig, 
             url_invoker: UrlInvoker, 
+            child_folder_url_invoker: UrlInvoker, 
             logger: Optional[Callable[[str], None]] = None, 
             stop_event: Optional[threading.Event] = None
         ):
         super().__init__()
-        self.manager = manager
         self.config = config
         self.url_invoker = url_invoker
+        self.child_folder_url_invoker = child_folder_url_invoker
         self.logger = logger
         self.stop_event = stop_event
         self.archive_executor = ThreadPoolExecutor(max_workers=self.config.concurrency)
+        self.tree_executor = ThreadPoolExecutor(max_workers=self.config.concurrency)
 
     def calculate_migration_eta(self, data: Dict[str, Any]) -> float:
         return super().calculate_migration_eta(data)
@@ -271,10 +268,22 @@ class EOInPlaceArchiveEstimator(Estimator):
             
             all_initial_responses = []
             folder_context_map = {}
+
+            futures_map: Dict[int, Future[List[Dict[str, Any]]]] = {}
+            batch_id_to_batch_map: Dict[int, List[Dict[str, Any]]] = {}
+            idx = 0
+            for batch in batches:
+                futures_map[idx] = self.archive_executor.submit(self.child_folder_url_invoker.invoke, GRAPH_BETA_URL, batch, self.logger, self.stop_event, self.get_resource_type())
+                batch_id_to_batch_map[idx] = batch
+                idx += 1
+
+            response_map: Dict[int, List[Dict[str, Any]]] = {}
+            for batch_id, future in futures_map.items():
+                response_map[batch_id] = future.result()
             
             # Using sequential processing here as each batch would have 4 requests which is = throttling quota of same mailbox requests.
-            for batch in batches:
-                responses = self.url_invoker.invoke(GRAPH_BETA_URL, batch, self.logger, self.stop_event, self.get_resource_type())
+            for batch_id, responses in response_map.items():
+                batch = batch_id_to_batch_map[batch_id]
                 all_initial_responses.append((batch, responses))
                 
                 batch_responses_map = get_batch_responses_map(responses, self.logger)
@@ -330,9 +339,20 @@ class EOInPlaceArchiveEstimator(Estimator):
                 
                 new_pending_next_items = []
                 
-                # Execute batches SEQUENTIALLY for child folders
+                futures_map = {}
+                batch_id_to_batch_map = {}
+                idx = 0
                 for batch in batches:
-                    responses = self.url_invoker.invoke(GRAPH_BETA_URL, batch, self.logger, self.stop_event, self.get_resource_type())
+                    futures_map[idx] = self.archive_executor.submit(self.child_folder_url_invoker.invoke, GRAPH_BETA_URL, batch, self.logger, self.stop_event, self.get_resource_type())
+                    batch_id_to_batch_map[idx] = batch
+                    idx += 1
+
+                response_map = {}
+                for batch_id, future in futures_map.items():
+                    response_map[batch_id] = future.result()
+
+                for batch_id, responses in response_map.items():
+                    batch = batch_id_to_batch_map[batch_id]
                     new_pending_next_items.extend(process_pagination_responses(batch, responses, folder_context_map, "folderId", GRAPH_BETA_URL, True))
                     
                 pending_next_items = new_pending_next_items
@@ -407,7 +427,7 @@ class EOInPlaceArchiveEstimator(Estimator):
                 active_thread_count.increment()
 
                 #TODO Use a retry template and failure callback instead of try, except
-                self.archive_executor.submit(self.parse_and_count_mails_in_child_folders, condition, parseable_sub_folders, archived_mail_count, active_thread_count, failures)
+                self.tree_executor.submit(self.parse_and_count_mails_in_child_folders, condition, parseable_sub_folders, archived_mail_count, active_thread_count, failures)
             except:
                 active_thread_count.decrement()
                 with condition:

@@ -9,7 +9,6 @@ import threading
 class TestEOInPlaceArchiveEstimator(unittest.TestCase):
 
     def setUp(self):
-        self.mock_token_manager = MagicMock(spec=TokenManager)
         self.mock_url_invoker = MagicMock(spec=UrlInvoker)
         
         self.config = ScanConfig(
@@ -34,9 +33,9 @@ class TestEOInPlaceArchiveEstimator(unittest.TestCase):
         
         self.stop_event = threading.Event()
         self.estimator = EOInPlaceArchiveEstimator(
-            manager=self.mock_token_manager,
             config=self.config,
             url_invoker=self.mock_url_invoker,
+            child_folder_url_invoker=self.mock_url_invoker,
             stop_event=self.stop_event
         )
 
@@ -188,8 +187,6 @@ class TestEOInPlaceArchiveEstimator(unittest.TestCase):
                 req_id = req.get("id")
                 if "headers" in req and "userId" in req["headers"]:
                     responses.append({"id": req_id, "status": 200, "body": {"inPlaceArchiveMailboxId": "archive-1"}})
-                elif "headers" in req and "mailboxId" in req["headers"]:
-                    responses.append({"id": req_id, "status": 200, "body": {"value": [{"id": "folder-1", "totalItemCount": 10, "childFolderCount": 1}]}})
                 elif "headers" in req and "folderId" in req["headers"]:
                     responses.append({
                         "id": req_id,
@@ -200,6 +197,8 @@ class TestEOInPlaceArchiveEstimator(unittest.TestCase):
                             }
                         }
                     })
+                elif "headers" in req and "mailboxId" in req["headers"]:
+                    responses.append({"id": req_id, "status": 200, "body": {"value": [{"id": "folder-1", "totalItemCount": 10, "childFolderCount": 1}]}})
             return responses
 
         self.mock_url_invoker.invoke.side_effect = mock_invoke
@@ -262,6 +261,16 @@ class TestEOInPlaceArchiveEstimator(unittest.TestCase):
                 req_id = req.get("id")
                 if "headers" in req and "userId" in req["headers"]:
                     responses.append({"id": req_id, "status": 200, "body": {"inPlaceArchiveMailboxId": "archive-1"}})
+                elif "headers" in req and "folderId" in req["headers"]:
+                    responses.append({
+                        "id": req_id,
+                        "status": 200,
+                        "body": {
+                            "value": [
+                                {"id": f"sub-{req['headers']['folderId']}", "totalItemCount": 5, "childFolderCount": 0}
+                            ]
+                        }
+                    })
                 elif "headers" in req and "mailboxId" in req["headers"]:
                     responses.append({
                         "id": req_id,
@@ -270,16 +279,6 @@ class TestEOInPlaceArchiveEstimator(unittest.TestCase):
                             "value": [
                                 {"id": "folder-1", "totalItemCount": 10, "childFolderCount": 1},
                                 {"id": "folder-2", "totalItemCount": 20, "childFolderCount": 1}
-                            ]
-                        }
-                    })
-                elif "headers" in req and "folderId" in req["headers"]:
-                    responses.append({
-                        "id": req_id,
-                        "status": 200,
-                        "body": {
-                            "value": [
-                                {"id": f"sub-{req['headers']['folderId']}", "totalItemCount": 5, "childFolderCount": 0}
                             ]
                         }
                     })

@@ -674,7 +674,7 @@ class MigrationEstimatorTool(ctk.CTk):
         corner_radius=4,
         fg_color=COLOR_PRIMARY,
         border_color=COLOR_TEXT_SUB,
-        # state="disabled",
+        state="disabled",
     ).pack(side="left", padx=10)
     ctk.CTkCheckBox(
         scan_options_frame,
@@ -1877,9 +1877,12 @@ class MigrationEstimatorTool(ctk.CTk):
 
       # 2. Authentication
       manager = self._authenticate_if_needed(config)
-
+      one_token_per_app_manager = None
+      if config.scan_in_place_archives:
+        one_token_per_app_manager = self._authenticate_if_needed(config, use_single_app=True)
+      
       # 3. User Discovery
-      all_users, existing_data = self._resolve_target_users(config, manager)
+      all_users, existing_data = self._resolve_target_users(config, manager, one_token_per_app_manager)
 
       # 4. Build Batch List
       csv_rows, stats = self._prepare_batch_list(
@@ -1887,7 +1890,7 @@ class MigrationEstimatorTool(ctk.CTk):
       )
 
       # 5. Execution
-      self._run_scan_phases(config, manager, csv_rows, stats)
+      self._run_scan_phases(config, manager, one_token_per_app_manager, csv_rows, stats)
 
       # 6. Analysis & Reporting
       self._generate_final_report(config, csv_rows, stats, monitor, start_time)
@@ -1926,7 +1929,7 @@ class MigrationEstimatorTool(ctk.CTk):
     )
 
   def _authenticate_if_needed(
-      self, config: ScanConfig
+      self, config: ScanConfig, use_single_app: bool = False
   ) -> Optional[TokenManager]:
     """Authenticates with MS Graph if any scanning is required."""
     if config.tenant_id and config.client_ids and config.client_secrets:
@@ -1934,7 +1937,7 @@ class MigrationEstimatorTool(ctk.CTk):
           config.tenant_id,
           config.client_ids,
           config.client_secrets,
-          config.concurrency,
+          config.concurrency if use_single_app is False else 1,
           config.retries,
           config.backoff,
       )
@@ -1942,7 +1945,7 @@ class MigrationEstimatorTool(ctk.CTk):
     return None
 
   def _resolve_target_users(
-      self, config: ScanConfig, manager: Optional[TokenManager]
+      self, config: ScanConfig, manager: Optional[TokenManager], one_token_per_app_manager: Optional[TokenManager] = None
   ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Resolves the list of users to process, either from CSV or Tenant."""
     existing_data = {}
@@ -2017,6 +2020,8 @@ class MigrationEstimatorTool(ctk.CTk):
           raise Exception(
               "Missing Credentials for Delta Scan (CSV missing some columns)."
           )
+      if not one_token_per_app_manager and config.scan_in_place_archives and not have_in_place_archives:
+        raise Exception("Missing Credentials for In Place Archive Scan.")
 
       # Determine scopes based on what is missing
       required_scopes = ["User.Read.All"]
@@ -2034,6 +2039,8 @@ class MigrationEstimatorTool(ctk.CTk):
         required_scopes.append("Mail.Read")
 
       manager.authenticate_all(self.log_msg, required_scopes=required_scopes)
+      if one_token_per_app_manager:
+        one_token_per_app_manager.authenticate_all(self.log_msg, required_scopes=["User.Read.All", "MailboxSettings.Read", "Mail.Read"])
     else:
       self.log_msg(
           "Skipping Authentication (All required data present in CSV)."
@@ -2129,6 +2136,7 @@ class MigrationEstimatorTool(ctk.CTk):
     config: ScanConfig,
     user_chunks: List[List[Dict[str, Any]]],
     manager: Optional[TokenManager],
+    one_token_per_app_manager: Optional[TokenManager],
     stats: Dict[str, int],
     total_users: int,
     log_freq: int = 10
@@ -2149,16 +2157,22 @@ class MigrationEstimatorTool(ctk.CTk):
     executor = ThreadPoolExecutor(max_workers=config.concurrency)
     estimator: Estimator = None
     if resource_type == "in_place_archives":
+      child_folder_url_invoker = UrlInvoker(
+        one_token_per_app_manager,
+        config.retries,
+        config.backoff,
+        1,
+        0.5
+      )
       estimator = EOInPlaceArchiveEstimator(
-        manager,
         config,
         url_invoker,
+        child_folder_url_invoker,
         logger=self.log_msg,
         stop_event=self.stop_scan_event
       )
     elif resource_type == "group_mail_boxes":
       estimator = EOGroupMailBoxEstimator(
-        manager,
         config,
         url_invoker,
         logger=self.log_msg,
@@ -2260,6 +2274,7 @@ class MigrationEstimatorTool(ctk.CTk):
       self,
       config: ScanConfig,
       manager: Optional[TokenManager],
+      one_token_per_app_manager: Optional[TokenManager],
       csv_rows: List[Dict[str, Any]],
       stats: Dict[str, int],
   ) -> None:
@@ -2356,7 +2371,7 @@ class MigrationEstimatorTool(ctk.CTk):
         failed_in_place_archives, partial_in_place_archive_failures = self.run_batch_scan(
             "in_place_archives", 
             config,
-            user_chunks, manager, stats, total_users
+            user_chunks, manager, one_token_per_app_manager, stats, total_users
         )
         self.ui_update("phase_status", source="in_place_archives", status="complete")
       else:
@@ -2378,7 +2393,7 @@ class MigrationEstimatorTool(ctk.CTk):
         failed_group_mailboxes, partial_group_mail_box_failures = self.run_batch_scan(
             "group_mail_boxes", 
             config,
-            user_chunks, manager, stats, total_users
+            user_chunks, manager, None, stats, total_users
         )
         self.ui_update("phase_status", source="group_mail_boxes", status="complete")
       else:
@@ -2738,9 +2753,9 @@ class MigrationEstimatorTool(ctk.CTk):
     # Helper: Calculate ETA for subset
     config = self._get_scan_configuration()
     if ENABLE_IN_PLACE_ARCHIVE_ETA:
-      in_place_archive_estimator = EOInPlaceArchiveEstimator(None, config, None)
+      in_place_archive_estimator = EOInPlaceArchiveEstimator(config, None, None)
     if ENABLE_GROUP_MAILBOX_ETA:
-      group_mail_box_estimator = EOGroupMailBoxEstimator(None, config, None)
+      group_mail_box_estimator = EOGroupMailBoxEstimator(config, None)
 
     def get_batch_eta(subset_df):
       eta_email = 0.0

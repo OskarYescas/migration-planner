@@ -35,13 +35,13 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
             print(f"Loaded test data from {cls.data_path}")
 
     def setUp(self):
-        self.mock_token_manager = MagicMock(spec=TokenManager)
         self.mock_url_invoker = MagicMock(spec=UrlInvoker)
+        self.mock_child_folder_url_invoker = MagicMock(spec=UrlInvoker)
         
         self.config = ScanConfig(
             tenant_id="test-tenant",
-            client_ids=["test-client"],
-            client_secrets=["test-secret"],
+            client_ids=["test-client-1", "test-client-2"],
+            client_secrets=["test-secret-1", "test-secret-2"],
             user_source="tenant",
             csv_path="",
             scan_email=False,
@@ -58,10 +58,12 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
             eta_max_users=5
         )
         
+        self.stop_event = threading.Event()
         self.estimator = EOInPlaceArchiveEstimator(
-            manager=self.mock_token_manager,
             config=self.config,
-            url_invoker=self.mock_url_invoker
+            url_invoker=self.mock_url_invoker,
+            child_folder_url_invoker=self.mock_child_folder_url_invoker,
+            stop_event=self.stop_event
         )
         
         # Quota tracking
@@ -73,117 +75,144 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
     def _run_simulation(self):
         data = self.test_data
         
-        def mock_invoke(base_url, batch, logger, stop_event, resource_type):
-            mailbox_ids = []
+        # Quota tracking per app
+        self.max_concurrent_app1 = 0
+        self.max_concurrent_app2 = 0
+        self.active_requests_app1 = {}
+        self.active_requests_app2 = {}
+        
+        # Token pools
+        num_app1_tokens = self.config.concurrency * len(self.config.client_ids)
+        num_app2_tokens = len(self.config.client_ids)
+        
+        app1_token_pool = threading.Semaphore(num_app1_tokens)
+        app2_token_pool = threading.Semaphore(num_app2_tokens)
+        
+        def make_mock_invoke(app_id):
+            token_pool = app1_token_pool if app_id == 1 else app2_token_pool
             
-            if self.track_quotas:
-                # Assert batch size
-                with self.active_requests_lock:
-                    self.max_batch_size = max(self.max_batch_size, len(batch))
+            def mock_invoke(base_url, batch, logger, stop_event, resource_type):
+                token_pool.acquire()
+                try:
+                    mailbox_ids = []
                     
-                # Identify mailbox IDs in this batch
-                for req in batch:
-                    if "headers" in req:
-                        if "mailboxId" in req["headers"]:
-                            mailbox_ids.append(req["headers"]["mailboxId"])
-                        elif "userId" in req["headers"]:
+                    if self.track_quotas:
+                        # Assert batch size
+                        with self.active_requests_lock:
+                            self.max_batch_size = max(self.max_batch_size, len(batch))
+                            
+                        # Identify mailbox IDs in this batch
+                        for req in batch:
+                            if "headers" in req:
+                                if "mailboxId" in req["headers"]:
+                                    mailbox_ids.append(req["headers"]["mailboxId"])
+                                elif "userId" in req["headers"]:
+                                    user_id = req["headers"]["userId"]
+                                    if user_id in data["users"]:
+                                        mailbox_ids.append(data["users"][user_id])
+                        # Increment active counts
+                        with self.active_requests_lock:
+                            active_reqs = self.active_requests_app1 if app_id == 1 else self.active_requests_app2
+                            for mid in mailbox_ids:
+                                active_reqs[mid] = active_reqs.get(mid, 0) + 1
+                                if app_id == 1:
+                                    self.max_concurrent_app1 = max(self.max_concurrent_app1, active_reqs[mid])
+                                else:
+                                    self.max_concurrent_app2 = max(self.max_concurrent_app2, active_reqs[mid])
+                            
+                    # Simulate network delay
+                    time.sleep(random.uniform(0.01, 0.1))
+                    
+                    responses = []
+                    for req in batch:
+                        req_id = req.get("id")
+                        
+                        if "headers" in req and "userId" in req["headers"]:
                             user_id = req["headers"]["userId"]
                             if user_id in data["users"]:
-                                mailbox_ids.append(data["users"][user_id])
-                # Increment active counts
-                with self.active_requests_lock:
-                    for mid in mailbox_ids:
-                        self.active_requests[mid] = self.active_requests.get(mid, 0) + 1
-                        self.max_concurrent_per_mailbox = max(self.max_concurrent_per_mailbox, self.active_requests[mid])
-                    
-            # Simulate network delay
-            time.sleep(random.uniform(0.01, 0.1))
-            
-            responses = []
-            for req in batch:
-                req_id = req.get("id")
-                
-                if "headers" in req and "userId" in req["headers"]:
-                    user_id = req["headers"]["userId"]
-                    if user_id in data["users"]:
-                        mailbox_id = data["users"][user_id]
-                        responses.append({
-                            "id": req_id,
-                            "status": 200,
-                            "body": {
-                                "inPlaceArchiveMailboxId": mailbox_id
-                            }
-                        })
-                    else:
-                        responses.append({"id": req_id, "status": 404, "body": {"error": {"message": "User not found"}}})
-                        
-                elif "headers" in req and "folderId" in req["headers"]:
-                    folder_id = req["headers"]["folderId"]
-                    if folder_id in data["folders"]:
-                        f_data = data["folders"][folder_id]
-                        
-                        if self.simulate_failures and f_data.get("fail", False):
-                            responses.append({
-                                "id": req_id,
-                                "status": 500,
-                                "body": {
-                                    "error": {
-                                        "message": "Simulated folder failure"
+                                mailbox_id = data["users"][user_id]
+                                responses.append({
+                                    "id": req_id,
+                                    "status": 200,
+                                    "body": {
+                                        "inPlaceArchiveMailboxId": mailbox_id
                                     }
-                                }
-                            })
-                        else:
-                            child_ids = f_data["childFolders"]
-                            child_list = []
-                            for cid in child_ids:
-                                c_data = data["folders"][cid]
-                                child_list.append({
-                                    "id": c_data["id"],
-                                    "totalItemCount": c_data["totalItemCount"],
-                                    "childFolderCount": c_data["childFolderCount"]
                                 })
-                            responses.append({
-                                "id": req_id,
-                                "status": 200,
-                                "body": {
-                                    "value": child_list
-                                }
-                            })
-                    else:
-                        responses.append({"id": req_id, "status": 404, "body": {"error": {"message": "Folder not found"}}})
-                        
-                elif "headers" in req and "mailboxId" in req["headers"]:
-                    mailbox_id = req["headers"]["mailboxId"]
-                    if mailbox_id in data["mailboxes"]:
-                        folder_ids = data["mailboxes"][mailbox_id]
-                        folder_list = []
-                        for fid in folder_ids:
-                            f_data = data["folders"][fid]
-                            folder_list.append({
-                                "id": f_data["id"],
-                                "totalItemCount": f_data["totalItemCount"],
-                                "childFolderCount": f_data["childFolderCount"]
-                            })
-                        responses.append({
-                            "id": req_id,
-                            "status": 200,
-                            "body": {
-                                "value": folder_list
-                            }
-                        })
-                    else:
-                        responses.append({"id": req_id, "status": 404, "body": {"error": {"message": "Mailbox not found"}}})
-                else:
-                    responses.append({"id": req_id, "status": 400, "body": {"error": {"message": "Bad Request"}}})
-                    
-            if self.track_quotas:
-                with self.active_requests_lock:
-                    for mid in mailbox_ids:
-                        self.active_requests[mid] -= 1
-                        
-            return responses
+                            else:
+                                responses.append({"id": req_id, "status": 404, "body": {"error": {"message": "User not found"}}})
+                                
+                        elif "headers" in req and "folderId" in req["headers"]:
+                            folder_id = req["headers"]["folderId"]
+                            if folder_id in data["folders"]:
+                                f_data = data["folders"][folder_id]
+                                
+                                if self.simulate_failures and f_data.get("fail", False):
+                                    responses.append({
+                                        "id": req_id,
+                                        "status": 500,
+                                        "body": {
+                                            "error": {
+                                                "message": "Simulated folder failure"
+                                            }
+                                        }
+                                    })
+                                else:
+                                    child_ids = f_data["childFolders"]
+                                    child_list = []
+                                    for cid in child_ids:
+                                        c_data = data["folders"][cid]
+                                        child_list.append({
+                                            "id": c_data["id"],
+                                            "totalItemCount": c_data["totalItemCount"],
+                                            "childFolderCount": c_data["childFolderCount"]
+                                        })
+                                    responses.append({
+                                        "id": req_id,
+                                        "status": 200,
+                                        "body": {
+                                            "value": child_list
+                                        }
+                                    })
+                            else:
+                                responses.append({"id": req_id, "status": 404, "body": {"error": {"message": "Folder not found"}}})
+                                
+                        elif "headers" in req and "mailboxId" in req["headers"]:
+                            mailbox_id = req["headers"]["mailboxId"]
+                            if mailbox_id in data["mailboxes"]:
+                                folder_ids = data["mailboxes"][mailbox_id]
+                                folder_list = []
+                                for fid in folder_ids:
+                                    f_data = data["folders"][fid]
+                                    folder_list.append({
+                                        "id": f_data["id"],
+                                        "totalItemCount": f_data["totalItemCount"],
+                                        "childFolderCount": f_data["childFolderCount"]
+                                    })
+                                responses.append({
+                                    "id": req_id,
+                                    "status": 200,
+                                    "body": {
+                                        "value": folder_list
+                                    }
+                                })
+                            else:
+                                responses.append({"id": req_id, "status": 404, "body": {"error": {"message": "Mailbox not found"}}})
+                        else:
+                            responses.append({"id": req_id, "status": 400, "body": {"error": {"message": "Bad Request"}}})
+                            
+                    if self.track_quotas:
+                        with self.active_requests_lock:
+                            active_reqs = self.active_requests_app1 if app_id == 1 else self.active_requests_app2
+                            for mid in mailbox_ids:
+                                active_reqs[mid] -= 1
+                                
+                    return responses
+                finally:
+                    token_pool.release()
+            return mock_invoke
 
-        self.mock_url_invoker.invoke.side_effect = mock_invoke
+        self.mock_url_invoker.invoke.side_effect = make_mock_invoke(1)
+        self.mock_child_folder_url_invoker.invoke.side_effect = make_mock_invoke(2)
 
         user_ids = list(data["users"].keys())
         input_data = {"user_ids": user_ids}
@@ -205,7 +234,8 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
         
         if self.track_quotas:
             print(f"Max batch size observed: {self.max_batch_size}")
-            print(f"Max concurrent requests per mailbox observed: {self.max_concurrent_per_mailbox}")
+            print(f"Max concurrent requests per mailbox observed (App 1): {self.max_concurrent_app1}")
+            print(f"Max concurrent requests per mailbox observed (App 2): {self.max_concurrent_app2}")
         
         self.assertEqual(len(result), len(user_ids))
         for user_id in user_ids:
@@ -216,7 +246,8 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
         
         if self.track_quotas:
             self.assertLessEqual(self.max_batch_size, 20, "Max batch size exceeded")
-            self.assertLessEqual(self.max_concurrent_per_mailbox, 4, "Max concurrent requests per mailbox exceeded")
+            self.assertLessEqual(self.max_concurrent_app1, 4, "Max concurrent requests per mailbox exceeded for App 1")
+            self.assertLessEqual(self.max_concurrent_app2, 4, "Max concurrent requests per mailbox exceeded for App 2")
 
     def test_flakiness(self):
         n_runs = int(os.environ.get("FLAKINESS_RUNS", "3"))
@@ -227,9 +258,11 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
         
         for i in range(n_runs):
             # Reset tracking for each run
-            self.max_concurrent_per_mailbox = 0
+            self.max_concurrent_app1 = 0
+            self.max_concurrent_app2 = 0
             self.max_batch_size = 0
-            self.active_requests = {}
+            self.active_requests_app1 = {}
+            self.active_requests_app2 = {}
             
             start_time = time.time()
             result, failures = self._run_simulation()
@@ -239,10 +272,12 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
             
             if self.track_quotas:
                 print(f"  Max batch size: {self.max_batch_size}")
-                print(f"  Max concurrent per mailbox: {self.max_concurrent_per_mailbox}")
+                print(f"  Max concurrent per mailbox (App 1): {self.max_concurrent_app1}")
+                print(f"  Max concurrent per mailbox (App 2): {self.max_concurrent_app2}")
                 
                 self.assertLessEqual(self.max_batch_size, 20, f"Max batch size exceeded in run {i+1}")
-                self.assertLessEqual(self.max_concurrent_per_mailbox, 4, f"Max concurrent requests per mailbox exceeded in run {i+1}")
+                self.assertLessEqual(self.max_concurrent_app1, 4, f"Max concurrent requests per mailbox exceeded for App 1 in run {i+1}")
+                self.assertLessEqual(self.max_concurrent_app2, 4, f"Max concurrent requests per mailbox exceeded for App 2 in run {i+1}")
             
             if i == 0:
                 first_result = result

@@ -24,7 +24,8 @@ def generate_data(
     data = {
         "users": {},
         "mailboxes": {},
-        "folders": {}
+        "folders": {},
+        "flattened_mailboxes": {}
     }
     folder_id_counter = 1
     
@@ -98,23 +99,26 @@ def generate_data(
     data["expected_result"] = {}
     data["expected_result_with_failures"] = {}
     
-    def calculate_counts(folder_id, fail_simulation):
+    def calculate_counts(mailbox_id, folder_id, fail_simulation, prepare_flattened_mailbox = False):
         folder = data["folders"][folder_id]
         count = folder["totalItemCount"]
+        if prepare_flattened_mailbox:
+            data["flattened_mailboxes"][mailbox_id].append(folder_id)
         
         if fail_simulation and folder.get("fail", False):
             return count
             
         for child_id in folder["childFolders"]:
-            count += calculate_counts(child_id, fail_simulation)
+            count += calculate_counts(mailbox_id, child_id, fail_simulation, prepare_flattened_mailbox)
         return count
 
     for user_id, mailbox_id in data["users"].items():
+        data["flattened_mailboxes"][mailbox_id] = []
         ideal_count = 0
         failure_count = 0
         for folder_id in data["mailboxes"][mailbox_id]:
-            ideal_count += calculate_counts(folder_id, False)
-            failure_count += calculate_counts(folder_id, True)
+            ideal_count += calculate_counts(mailbox_id, folder_id, False, True)
+            failure_count += calculate_counts(mailbox_id, folder_id, True)
         data["expected_result"][user_id] = ideal_count
         data["expected_result_with_failures"][user_id] = failure_count
 

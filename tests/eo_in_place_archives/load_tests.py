@@ -9,6 +9,7 @@ import os
 import random
 import time
 import threading
+import urllib.parse
 
 class TestEOInPlaceArchiveLoad(unittest.TestCase):
     
@@ -17,6 +18,19 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
     
     # Flag to enable/disable quota tracking (defaults to False)
     track_quotas = os.environ.get("TRACK_QUOTAS", "False").lower() == "true"
+
+    # Flag to enable/disable delta APIs (defaults to False)
+    use_delta_api = os.environ.get("USE_DELTA_API", "False").lower() == "true"
+
+    # Safe parsing of PAGE_SIZE from environment variable
+    try:
+        PAGE_SIZE = int(os.environ.get("PAGE_SIZE", "5"))
+        if PAGE_SIZE <= 0:
+            print("Warning: PAGE_SIZE must be positive. Falling back to default (5).")
+            PAGE_SIZE = 5
+    except ValueError:
+        print("Warning: Invalid PAGE_SIZE provided. Falling back to default (5).")
+        PAGE_SIZE = 5
 
     @classmethod
     def setUpClass(cls):
@@ -63,7 +77,8 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
             config=self.config,
             url_invoker=self.mock_url_invoker,
             child_folder_url_invoker=self.mock_child_folder_url_invoker,
-            stop_event=self.stop_event
+            stop_event=self.stop_event,
+            use_delta_api=self.use_delta_api
         )
         
         # Quota tracking
@@ -88,7 +103,7 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
         app1_token_pool = threading.Semaphore(num_app1_tokens)
         app2_token_pool = threading.Semaphore(num_app2_tokens)
         
-        def make_mock_invoke(app_id):
+        def make_mock_invoke(app_id, us_delta_apis=False):
             token_pool = app1_token_pool if app_id == 1 else app2_token_pool
             
             def mock_invoke(base_url, batch, logger, stop_event, resource_type):
@@ -126,6 +141,7 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
                     responses = []
                     for req in batch:
                         req_id = req.get("id")
+                        url = req.get("url")
                         
                         if "headers" in req and "userId" in req["headers"]:
                             user_id = req["headers"]["userId"]
@@ -142,6 +158,9 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
                                 responses.append({"id": req_id, "status": 404, "body": {"error": {"message": "User not found"}}})
                                 
                         elif "headers" in req and "folderId" in req["headers"]:
+                            if self.use_delta_api:
+                                assert False, "Delta APIs should not use child folder mocks"
+
                             folder_id = req["headers"]["folderId"]
                             if folder_id in data["folders"]:
                                 f_data = data["folders"][folder_id]
@@ -157,43 +176,73 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
                                         }
                                     })
                                 else:
-                                    child_ids = f_data["childFolders"]
+                                    # Pagination support
+                                    parsed_url = urllib.parse.urlparse(url)
+                                    query_params = urllib.parse.parse_qs(parsed_url.query)
+                                    skip = int(query_params.get("$skip", [0])[0])
+                                    
+                                    page_size = TestEOInPlaceArchiveLoad.PAGE_SIZE
+
+                                    sliced_child_ids = f_data["childFolders"][skip : skip + page_size]
                                     child_list = []
-                                    for cid in child_ids:
+                                    for cid in sliced_child_ids:
                                         c_data = data["folders"][cid]
                                         child_list.append({
                                             "id": c_data["id"],
                                             "totalItemCount": c_data["totalItemCount"],
                                             "childFolderCount": c_data["childFolderCount"]
                                         })
+                                    
+                                    body = {"value": child_list}
+                                    
+                                    if skip + page_size < len(f_data["childFolders"]):
+                                        new_query = query_params.copy()
+                                        new_query["$skip"] = [str(skip + page_size)]
+                                        next_link = parsed_url.path + "?" + urllib.parse.urlencode(new_query, doseq=True)
+                                        body["@odata.nextLink"] = next_link
+
                                     responses.append({
                                         "id": req_id,
                                         "status": 200,
-                                        "body": {
-                                            "value": child_list
-                                        }
+                                        "body": body
                                     })
                             else:
                                 responses.append({"id": req_id, "status": 404, "body": {"error": {"message": "Folder not found"}}})
                                 
                         elif "headers" in req and "mailboxId" in req["headers"]:
                             mailbox_id = req["headers"]["mailboxId"]
-                            if mailbox_id in data["mailboxes"]:
-                                folder_ids = data["mailboxes"][mailbox_id]
+                            mailbox_key = "mailboxes" if self.use_delta_api is False else "flattened_mailboxes"
+
+                            if mailbox_id in data[mailbox_key]:                                
+                                # Pagination support
+                                parsed_url = urllib.parse.urlparse(url)
+                                query_params = urllib.parse.parse_qs(parsed_url.query)
+                                skip = int(query_params.get("$skip", [0])[0])
+                                
+                                page_size = TestEOInPlaceArchiveLoad.PAGE_SIZE
+
+                                sliced_folder_ids = data[mailbox_key][mailbox_id][skip : skip + page_size]
                                 folder_list = []
-                                for fid in folder_ids:
+                                for fid in sliced_folder_ids:
                                     f_data = data["folders"][fid]
                                     folder_list.append({
                                         "id": f_data["id"],
                                         "totalItemCount": f_data["totalItemCount"],
                                         "childFolderCount": f_data["childFolderCount"]
                                     })
+    
+                                body = {"value": folder_list}
+                                
+                                if skip + page_size < len(data[mailbox_key][mailbox_id]):
+                                    new_query = query_params.copy()
+                                    new_query["$skip"] = [str(skip + page_size)]
+                                    next_link = parsed_url.path + "?" + urllib.parse.urlencode(new_query, doseq=True)
+                                    body["@odata.nextLink"] = next_link
+                                    
                                 responses.append({
                                     "id": req_id,
                                     "status": 200,
-                                    "body": {
-                                        "value": folder_list
-                                    }
+                                    "body": body
                                 })
                             else:
                                 responses.append({"id": req_id, "status": 404, "body": {"error": {"message": "Mailbox not found"}}})
@@ -211,8 +260,8 @@ class TestEOInPlaceArchiveLoad(unittest.TestCase):
                     token_pool.release()
             return mock_invoke
 
-        self.mock_url_invoker.invoke.side_effect = make_mock_invoke(1)
-        self.mock_child_folder_url_invoker.invoke.side_effect = make_mock_invoke(2)
+        self.mock_url_invoker.invoke.side_effect = make_mock_invoke(1, self.use_delta_api)
+        self.mock_child_folder_url_invoker.invoke.side_effect = make_mock_invoke(2, self.use_delta_api)
 
         user_ids = list(data["users"].keys())
         input_data = {"user_ids": user_ids}

@@ -15,6 +15,7 @@ class ScanConfig:
     scan_contact: bool
     scan_calendar: bool
     scan_in_place_archives: bool
+    scan_shared_mail_boxes: bool
     scan_group_mail_boxes: bool
     concurrency: int
     load_multiplier: int

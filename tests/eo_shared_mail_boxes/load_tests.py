@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from estimators.eo_group_mailbox_estimator import EOGroupMailBoxEstimator
+from estimators.eo_shared_mailbox_estimator import EOSharedMailBoxEstimator
 from util.connectors import UrlInvoker
 from util.utils import ScanConfig
 from util.enums import FailureType
@@ -10,7 +10,7 @@ import random
 import time
 import threading
 
-class TestEOGroupMailboxesLoad(unittest.TestCase):
+class TestEOSharedMailBoxLoad(unittest.TestCase):
     
     # Flag to enable/disable simulated failures (defaults to True)
     simulate_failures = os.environ.get("SIMULATE_FAILURES", "True").lower() == "true"
@@ -20,7 +20,7 @@ class TestEOGroupMailboxesLoad(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.data_path = "tests/eo_group_mail_boxes/test_data/state.json"
+        cls.data_path = "tests/eo_shared_mail_boxes/test_data/state.json"
         
         # Support loading specific state files (e.g., generated with a seed)
         env_data_path = os.environ.get("TEST_DATA_PATH")
@@ -47,7 +47,8 @@ class TestEOGroupMailboxesLoad(unittest.TestCase):
             scan_contact=False,
             scan_calendar=False,
             scan_in_place_archives=False,
-            scan_group_mail_boxes=True,
+            scan_group_mail_boxes=False,
+            scan_shared_mail_boxes=True,
             concurrency=10,
             parallel_batches=20,
             hierarchial_crawl_batch_limit=4,
@@ -57,7 +58,7 @@ class TestEOGroupMailboxesLoad(unittest.TestCase):
             eta_max_users=5
         )
         
-        self.estimator = EOGroupMailBoxEstimator(
+        self.estimator = EOSharedMailBoxEstimator(
             config=self.config,
             url_invoker=self.mock_url_invoker
         )

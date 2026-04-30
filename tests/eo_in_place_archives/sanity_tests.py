@@ -22,6 +22,7 @@ class TestEOInPlaceArchiveEstimator(unittest.TestCase):
             scan_calendar=False,
             scan_in_place_archives=False,
             scan_group_mail_boxes=False,
+            scan_shared_mail_boxes=False,
             concurrency=2,
             parallel_batches=2,
             hierarchial_crawl_batch_limit=2,

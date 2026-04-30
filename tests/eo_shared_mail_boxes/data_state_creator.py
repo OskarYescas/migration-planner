@@ -5,7 +5,7 @@ import argparse
 
 def generate_data(
     num_users=1000,
-    output_dir="tests/eo_group_mail_boxes/test_data",
+    output_dir="tests/eo_shared_mail_boxes/test_data",
     min_mail_count=500000,
     max_mail_count=1000000,
     seed=None

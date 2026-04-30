@@ -1,12 +1,12 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from estimators.eo_group_mailbox_estimator import EOGroupMailBoxEstimator
+from estimators.eo_shared_mailbox_estimator import EOSharedMailBoxEstimator
 from util.connectors import UrlInvoker
 from util.utils import ScanConfig
 from util.enums import FailureType
 import threading
 
-class TestEOGroupMailBoxEstimator(unittest.TestCase):
+class TestEOSharedMailBoxEstimator(unittest.TestCase):
 
     def setUp(self):
         self.mock_url_invoker = MagicMock(spec=UrlInvoker)
@@ -21,7 +21,8 @@ class TestEOGroupMailBoxEstimator(unittest.TestCase):
             scan_contact=False,
             scan_calendar=False,
             scan_in_place_archives=False,
-            scan_group_mail_boxes=True,
+            scan_group_mail_boxes=False,
+            scan_shared_mail_boxes=True,
             concurrency=2,
             parallel_batches=2,
             hierarchial_crawl_batch_limit=2,
@@ -32,7 +33,7 @@ class TestEOGroupMailBoxEstimator(unittest.TestCase):
         )
         
         self.stop_event = threading.Event()
-        self.estimator = EOGroupMailBoxEstimator(
+        self.estimator = EOSharedMailBoxEstimator(
             config=self.config,
             url_invoker=self.mock_url_invoker,
             stop_event=self.stop_event

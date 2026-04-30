@@ -145,6 +145,7 @@ ETA_CONTACT_BATCH_TIME = 25
 
 ENABLE_IN_PLACE_ARCHIVE_ETA = True
 ENABLE_SHARED_MAILBOX_ETA = True
+ENABLE_GROUP_MAILBOX_ETA = True
 
 # =================================================================================
 # BACKEND HELPERS
@@ -1862,11 +1863,11 @@ class MigrationEstimatorTool(ctk.CTk):
       )
     if self.scan_shared_mail_boxes.get():
       self.create_progress_row(
-          self.scan_container, "shared_mails", "Scanning Shared Mailboxes"
+          self.scan_container, "shared_mails", "Scanning Shared Mail Count"
       )
     if self.scan_group_mail_boxes.get():
       self.create_progress_row(
-          self.scan_container, "group_mails", "Scanning Group Mailboxes"
+          self.scan_container, "group_mails", "Scanning Group Mail Count"
       )
     self.create_progress_row(
         self.scan_container, "plan_generation", "Generating Migration Plan"
@@ -2758,8 +2759,8 @@ class MigrationEstimatorTool(ctk.CTk):
         f"Emails: {stats['emails']} | Contacts: {stats['contacts']} |"
         f" Calendars: {stats['calendars']} | Events: {stats['events']}"
         f" In Place Archives: {stats['in_place_archives']} |"
-        f" Shared Mailboxes: {stats['shared_mails']} |"
-        f" Group Mailboxes: {stats['group_mails']}"
+        f" Shared Mail Count: {stats['shared_mails']} |"
+        f" Group Mail Count: {stats['group_mails']}"
     )
     self.log_msg(f"System: {total_cpu_cores} Cores, {total_ram_gb:.1f}GB RAM")
     self.log_msg(f"CPU Avg/Peak: {avg_cpu:.1f}% / {max_cpu:.1f}%")
@@ -3021,6 +3022,8 @@ class MigrationEstimatorTool(ctk.CTk):
       in_place_archive_estimator = EOInPlaceArchiveEstimator(config, None, None)
     if ENABLE_SHARED_MAILBOX_ETA:
       shared_mail_box_estimator = EOSharedMailBoxEstimator(config, None)
+    if ENABLE_GROUP_MAILBOX_ETA:
+      group_mail_box_estimator = EOGroupMailBoxEstimator(config, None)
 
     def get_batch_eta(subset_df):
       eta_email = 0.0
@@ -3072,13 +3075,26 @@ class MigrationEstimatorTool(ctk.CTk):
             "batch_time": ETA_EMAIL_BATCH_TIME,
           }
         )
+      eta_group_mail_box = 0.0
+      if ENABLE_GROUP_MAILBOX_ETA:
+        eta_group_mail_box = group_mail_box_estimator.calculate_migration_eta(
+          {
+            "item_counts": subset_df["Group Mail Count"].tolist(),
+            "global_limit": ETA_EMAIL_GLOBAL_LIMIT,
+            "user_limit": ETA_EMAIL_USER_LIMIT,
+            "batch_size": ETA_EMAIL_BATCH_SIZE,
+            "batch_time": ETA_EMAIL_BATCH_TIME,
+          }
+        )
 
       if ENABLE_IN_PLACE_ARCHIVE_ETA:
         in_place_archive_estimator.shutdown()
       if ENABLE_SHARED_MAILBOX_ETA:
         shared_mail_box_estimator.shutdown()
+      if ENABLE_GROUP_MAILBOX_ETA:
+        group_mail_box_estimator.shutdown()
 
-      return max(eta_email, eta_calendar + eta_contact, eta_in_place_archive, eta_shared_mail_box)
+      return max(eta_email, eta_calendar + eta_contact, eta_in_place_archive, eta_shared_mail_box, eta_group_mail_box)
 
     # 2. Iterate through candidates
     for target_hours in candidate_hours:

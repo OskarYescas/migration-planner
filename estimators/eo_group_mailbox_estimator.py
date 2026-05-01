@@ -126,7 +126,7 @@ class EOGroupMailBoxEstimator(Estimator):
                             self.logger(f"Error fetching groups: {resp['body']['error']['message']}")
                 else:
                      if self.logger:
-                            self.logger("No response found for group API.")
+                            self.logger("[WARNING] No response found for group API.")
 
         while pending_next_items and not self.is_hard_stop_requested():
             batches = create_batches("{url}", pending_next_items, self.config.parallel_batches, True)
@@ -211,7 +211,7 @@ class EOGroupMailBoxEstimator(Estimator):
                             self.logger(f"Error fetching threads for group {group_id}: {resp['body']['error']['message']}")
                 else:
                      if self.logger:
-                            self.logger(f"No response found for group {self.get_display_name_from_id(req['headers']['group_id'])} thread API.")
+                            self.logger(f"[WARNING] No response found for group {self.get_display_name_from_id(req['headers']['group_id'])} thread API.")
 
         while pending_next_items and not self.is_hard_stop_requested():
             batches = create_batches("{url}", pending_next_items, self.config.parallel_batches, True)

@@ -79,6 +79,7 @@ from estimators.eo_group_mailbox_estimator import EOGroupMailBoxEstimator
 from estimators.factory import EstimatorFactory
 from util.connectors import TokenManager, UrlInvoker
 from util.utils import ScanConfig
+from util.enums import FailureType
 from util.monitoring import ResourceMonitor
 
 # =================================================================================
@@ -932,7 +933,7 @@ class MigrationEstimatorTool(ctk.CTk):
           "Group Mails", 
           f"{data['total_group_mails']:,}",
           "👥📧",
-          sub=f"({data['total_group_threads']:,} Threads)",
+          sub=f"({data['total_group_threads']:,} {'Group Thread' if data['total_group_threads'] == 1 else 'Group Threads'})",
       )
 
       # Timeline
@@ -1811,7 +1812,7 @@ class MigrationEstimatorTool(ctk.CTk):
               base_text = ", ".join(text_parts)
               extra_text = msg.get("extra_text", None)    
               if extra_text:
-                base_text += f"| {extra_text}"
+                base_text += f" | {extra_text}"
               final_text = f"{base_text} | {label}: {cumulative:,}"
               
               widget_lbl.configure(
@@ -2347,12 +2348,14 @@ class MigrationEstimatorTool(ctk.CTk):
           {
             "user": id_to_upn_map.get(failure["userId"], failure["userId"]), 
             "cause": f"[{failure['statusCode'] if 'statusCode' in failure else None}] {failure['message']}", 
+            "type": failure.get("type")
           } for failure in complete_failures if failure["userId"] is not None] 
         partial_failures += [
           {
             "user": id_to_upn_map.get(failure["userId"], failure["userId"]), 
             "cause": f"[{failure['statusCode'] if 'statusCode' in failure else None}] {failure['message']}", 
-            "failed_resource": failure["folderId"] if "folderId" in failure else None
+            "failed_resource": failure["folderId"] if "folderId" in failure else None,
+            "type": failure.get("type")
           } for failure in chunk_partial_failures if failure["userId"] is not None]
         users_failed += len(
             set(failure["userId"] for failure in complete_failures if failure["userId"] is not None)
@@ -2485,6 +2488,7 @@ class MigrationEstimatorTool(ctk.CTk):
           {
             "group": id_to_upn_map.get(failure["groupId"], failure["groupId"]), 
             "cause": f"[{failure['statusCode'] if 'statusCode' in failure else None}] {failure['message']}", 
+            "type": failure.get("type")
           } for failure in complete_failures if failure.get("groupId") is not None] 
         
         groups_failed += len(
@@ -2763,22 +2767,25 @@ class MigrationEstimatorTool(ctk.CTk):
       if failed_in_place_archives:
         self.log_msg("In Place Archive Migration Failures")
         for f in failed_in_place_archives:
+          prefix = "[WARNING]" if f.get("type", None) == FailureType.NOT_FOUND else "[ERROR]"
           user_upn = self.id_to_display_name[f["user"]] if f["user"] in self.id_to_display_name else f["user"]
-          self.log_msg(f"User: {user_upn} | Cause: {f['cause']}")
+          self.log_msg(f"{prefix} User: {user_upn} | Cause: {f['cause']}")
         self.log_msg("")  # Add blank line
       
       if failed_shared_mails:
         self.log_msg("Shared Mail Box Migration Failures")
         for f in failed_shared_mails:
+          prefix = "[WARNING]" if f.get("type", None) == FailureType.NOT_FOUND else "[ERROR]"
           shared_mailbox_upn = self.id_to_display_name[f["user"]] if f["user"] in self.id_to_display_name else f["user"]
-          self.log_msg(f"Shared Mail Box: {shared_mailbox_upn} | Cause: {f['cause']}")
+          self.log_msg(f"{prefix} Shared Mail Box: {shared_mailbox_upn} | Cause: {f['cause']}")
         self.log_msg("")  # Add blank line
       
       if failed_group_mails:
         self.log_msg("Group Mail Box Migration Failures")
         for f in failed_group_mails:
+          prefix = "[WARNING]" if f.get("type", None) == FailureType.NOT_FOUND else "[ERROR]"
           group_name = self.id_to_display_name[f["group"]] if f["group"] in self.id_to_display_name else f["group"]
-          self.log_msg(f"Group: {group_name} | Cause: {f['cause']}")
+          self.log_msg(f"{prefix} Group: {group_name} | Cause: {f['cause']}")
         self.log_msg("")  # Add blank line
 
       self.log_msg("=" * 40)
@@ -2787,13 +2794,15 @@ class MigrationEstimatorTool(ctk.CTk):
       if partial_in_place_archive_failures:
         self.log_msg("In Place Archive Migration Partial Failures")
         for f in partial_in_place_archive_failures:
-          self.log_msg(f"User: {f['user']} | Cause: {f['cause']} | Failed Resource: {f['failed_resource']}")
+          prefix = "[WARNING]" if f.get("type", None) == FailureType.NOT_FOUND else "[ERROR]"
+          self.log_msg(f"{prefix} User: {f['user']} | Cause: {f['cause']} | Failed Resource: {f['failed_resource']}")
         self.log_msg("")  # Add blank line
       
       if partial_shared_mail_box_failures:
         self.log_msg("Shared Mail Box Migration Partial Failures")
         for f in partial_shared_mail_box_failures:
-          self.log_msg(f"Shared Mail Box: {f['user']} | Cause: {f['cause']} | Failed Resource: {f['failed_resource']}")
+          prefix = "[WARNING]" if f.get("type", None) == FailureType.NOT_FOUND else "[ERROR]"
+          self.log_msg(f"{prefix} Shared Mail Box: {f['user']} | Cause: {f['cause']} | Failed Resource: {f['failed_resource']}")
         self.log_msg("")  # Add blank line
 
       self.log_msg("=" * 40)

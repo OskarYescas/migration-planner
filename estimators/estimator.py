@@ -5,6 +5,17 @@ class Estimator:
     def __init__(self):
         pass
 
+    def set_id_to_display_name_map(self, map):
+        if map is not None:
+            self.id_to_display = map
+        else:
+            self.id_to_display = {}
+
+    def get_display_name_from_id(self, id: str) -> str:
+        if id in self.id_to_display:
+            return self.id_to_display[id]
+        return id
+
     def calculate_resource_count(self, data: Dict[str, Any], failures: List[Dict[str, str]]) -> Dict[str, int]:
         raise NotImplementedError("Subclasses must implement the estimate method")
     

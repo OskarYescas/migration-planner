@@ -76,6 +76,7 @@ from urllib3.util.retry import Retry
 from estimators.eo_in_place_archive_estimator import EOInPlaceArchiveEstimator
 from estimators.eo_shared_mailbox_estimator import EOSharedMailBoxEstimator
 from estimators.eo_group_mailbox_estimator import EOGroupMailBoxEstimator
+from estimators.factory import EstimatorFactory
 from util.connectors import TokenManager, UrlInvoker
 from util.utils import ScanConfig
 from util.monitoring import ResourceMonitor
@@ -927,7 +928,11 @@ class MigrationEstimatorTool(ctk.CTk):
           card_frame, "Shared Mails", f"{data['total_shared_mails']:,}", "👥📧"
       )
       self.create_stat_card(
-          card_frame, "Group Mails", f"{data['total_group_mails']:,}", "👥📧"
+          card_frame, 
+          "Group Mails", 
+          f"{data['total_group_mails']:,}",
+          "👥📧",
+          sub=f"({data['total_group_threads']:,} Threads)",
       )
 
       # Timeline
@@ -1802,8 +1807,11 @@ class MigrationEstimatorTool(ctk.CTk):
                   text_parts.append(f"{users_partially_failed} partially failed")
               if users_skipped > 0:
                   text_parts.append(f"{users_skipped} skipped")
-                  
+              
               base_text = ", ".join(text_parts)
+              extra_text = msg.get("extra_text", None)    
+              if extra_text:
+                base_text += f"| {extra_text}"
               final_text = f"{base_text} | {label}: {cumulative:,}"
               
               widget_lbl.configure(
@@ -1919,6 +1927,7 @@ class MigrationEstimatorTool(ctk.CTk):
       one_token_per_app_manager = None
       if config.scan_in_place_archives:
         one_token_per_app_manager = self._authenticate_if_needed(config, use_single_app=True)
+      self.factory = EstimatorFactory(manager, config, self.log_msg, self.stop_scan_event, None)
       
       # 3. User Discovery
       all_users, existing_data, groups, shared_mailboxes = self._resolve_target_users(config, manager, one_token_per_app_manager)
@@ -1931,6 +1940,7 @@ class MigrationEstimatorTool(ctk.CTk):
       for row in csv_rows:
         self.id_to_display_name[row["User ID / Group ID"]] = row["User Principal Name / Group Mail"]
 
+      self.factory.set_id_to_display_name(self.id_to_display_name)
       user_csv_rows = [row for row in csv_rows if row["Type"] == "User"]
       shared_csv_rows = [row for row in csv_rows if row["Type"] == "Shared"]
       group_mail_rows = [row for row in csv_rows if row["Type"] == "Group Mailbox"]
@@ -2038,7 +2048,7 @@ class MigrationEstimatorTool(ctk.CTk):
             and "Event Count" in df_input.columns
         ):
           have_calendar = True
-        if "Group Mail Count" in df_input.columns:
+        if "Group Post Count" in df_input.columns:
           have_group_mailboxes = True
         if "Shared Mail Count" in df_input.columns:
           have_shared_mails = True
@@ -2128,19 +2138,7 @@ class MigrationEstimatorTool(ctk.CTk):
     
     shared_mailboxes = []
     if config.scan_shared_mail_boxes:
-      url_invoker = UrlInvoker(
-        manager,
-        config.retries,
-        config.backoff,
-        1,
-        0.5
-      )
-      estimator = EOSharedMailBoxEstimator(
-        config,
-        url_invoker,
-        logger=self.log_msg,
-        stop_event=self.stop_scan_event
-      )
+      estimator = self.factory.get_shared_mailbox_estimator(hard_reset=True)
       shared_mailbox_ids = estimator._get_shared_mail_boxes([user["id"] for user in all_users], [])
       personal_users = [user for user in all_users if user["id"] not in shared_mailbox_ids]
       shared_mailboxes = [user for user in all_users if user["id"] in shared_mailbox_ids]
@@ -2148,19 +2146,7 @@ class MigrationEstimatorTool(ctk.CTk):
 
     groups = []
     if config.scan_group_mail_boxes:
-      url_invoker = UrlInvoker(
-          manager,
-          config.retries,
-          config.backoff,
-          1,
-          0.5
-        )
-      estimator = EOGroupMailBoxEstimator(
-        config,
-        url_invoker,
-        logger=self.log_msg,
-        stop_event=self.stop_scan_event
-      )
+      estimator = self.factory.get_group_mailbox_estimator(hard_reset=True)
       if config.user_source == "csv":
         if not have_group_mailboxes:
           self.log_msg("Delta Scan required. Resolving Group IDs...")
@@ -2207,7 +2193,7 @@ class MigrationEstimatorTool(ctk.CTk):
     have_calendar = "Calendar Count" in sample and "Event Count" in sample
     have_in_place_archives = "In Place Archive Count" in sample
     have_shared_mails = "Shared Mail Count" in sample
-    have_group_mails = "Group Mail Count" in sample
+    have_group_mails = "Group Post Count" in sample and "Group Thread Count" in sample
 
     def safe_int(val):
       try:
@@ -2228,7 +2214,8 @@ class MigrationEstimatorTool(ctk.CTk):
           "Event Count": 0,
           "In Place Archive Count": 0,
           "Shared Mail Count": 0,
-          "Group Mail Count": 0
+          "Group Post Count": 0,
+          "Group Thread Count": 0
       }
       if key in existing_data:
         src = existing_data[key]
@@ -2258,12 +2245,14 @@ class MigrationEstimatorTool(ctk.CTk):
           "Event Count": 0,
           "In Place Archive Count": 0,
           "Shared Mail Count": 0,
-          "Group Mail Count": 0
+          "Group Post Count": 0,
+          "Group Thread Count": 0
       }
       if key in existing_data:
         src = existing_data[key]
         if have_group_mails and config.scan_group_mail_boxes:
-          row["Group Mail Count"] = safe_int(src.get("Group Mail Count", 0))
+          row["Group Post Count"] = safe_int(src.get("Group Post Count", 0))
+          row["Group Thread Count"] = safe_int(src.get("Group Thread Count", 0))
       csv_rows.append(row)
 
     for mailbox in shared_mailboxes:
@@ -2277,7 +2266,8 @@ class MigrationEstimatorTool(ctk.CTk):
           "Event Count": 0,
           "In Place Archive Count": 0,
           "Shared Mail Count": 0,
-          "Group Mail Count": 0
+          "Group Post Count": 0,
+          "Group Thread Count": 0
       }
       key = str(mailbox["userPrincipalName"]).lower().strip()
       if key in existing_data:
@@ -2293,7 +2283,8 @@ class MigrationEstimatorTool(ctk.CTk):
         "events": sum(r["Event Count"] for r in csv_rows),
         "in_place_archives": sum(r["In Place Archive Count"] for r in csv_rows),
         "shared_mails": sum(r["Shared Mail Count"] for r in csv_rows),
-        "group_mails": sum(r["Group Mail Count"] for r in csv_rows)
+        "group_mails": sum(r["Group Post Count"] for r in csv_rows),
+        "group_threads": sum(r["Group Thread Count"] for r in csv_rows)
     }
     return csv_rows, stats
 
@@ -2314,38 +2305,12 @@ class MigrationEstimatorTool(ctk.CTk):
     users_failed = 0
     users_partially_failed = 0
 
-    url_invoker = UrlInvoker(
-        manager,
-        config.retries,
-        config.backoff,
-        1,
-        0.5
-    )
     executor = ThreadPoolExecutor(max_workers=config.concurrency)
     estimator: Estimator = None
     if resource_type == "in_place_archives":
-      child_folder_url_invoker = UrlInvoker(
-        one_token_per_app_manager,
-        config.retries,
-        config.backoff,
-        1,
-        0.5
-      )
-      estimator = EOInPlaceArchiveEstimator(
-        config,
-        url_invoker,
-        child_folder_url_invoker,
-        logger=self.log_msg,
-        stop_event=self.stop_scan_event,
-        use_delta_api=True
-      )
+      estimator = self.factory.get_in_place_archive_estimator(use_delta_api=True)
     elif resource_type == "shared_mails":
-      estimator = EOSharedMailBoxEstimator(
-        config,
-        url_invoker,
-        logger=self.log_msg,
-        stop_event=self.stop_scan_event
-      )
+      estimator = self.factory.get_shared_mailbox_estimator()
     
     total_failures = []
     partial_failures = []
@@ -2477,24 +2442,13 @@ class MigrationEstimatorTool(ctk.CTk):
     self.log_msg("\n--- Starting GROUP MAIL BOX Scan ---")
     processed_groups = 0
     phase_total = 0
+    phase_threads = 0
     groups_failed = 0
     resource_type = "group_mails"
     log_freq = 10
 
-    url_invoker = UrlInvoker(
-        manager,
-        config.retries,
-        config.backoff,
-        1,
-        0.5
-    )
     executor = ThreadPoolExecutor(max_workers=config.concurrency)
-    estimator = EOGroupMailBoxEstimator(
-      config,
-      url_invoker,
-      logger=self.log_msg,
-      stop_event=self.stop_scan_event
-    )
+    estimator = self.factory.get_group_mailbox_estimator(hard_reset=True)
     
     total_failures = []
 
@@ -2515,12 +2469,14 @@ class MigrationEstimatorTool(ctk.CTk):
           break
 
         chunk = future_to_chunk_map[f]
-        chunk_result = f.result()
+        chunk_result_posts, chunk_result_threads = f.result()
         chunk_count += 1
       
         processed_groups += len(chunk)
-        chunk_total = sum(value for user_id, value in chunk_result.items())
-        phase_total += chunk_total
+        chunk_posts = sum(value for user_id, value in chunk_result_posts.items())
+        chunk_threads = sum(value for user_id, value in chunk_result_threads.items())
+        phase_total += chunk_posts
+        phase_threads += chunk_threads
         complete_failures = [failure for failure in future_to_failures_map[f] if failure["isPartial"] == False]
 
         id_to_upn_map = {row["User ID / Group ID"]: row["User Principal Name / Group Mail"] for row in chunk if row.get("User ID / Group ID") is not None}
@@ -2539,7 +2495,7 @@ class MigrationEstimatorTool(ctk.CTk):
         if chunk_count % log_freq == 0 or chunk_count == len(group_chunks):
           self.log_msg(
                 f"Processed {processed_groups}/{total_groups} | Failed:"
-                f" {groups_failed}/{total_groups} | {resource_type}: {phase_total}"
+                f" {groups_failed}/{total_groups} | Threads: {phase_threads} | Posts: {phase_total}"
             )
         prog = processed_groups / total_groups if total_groups > 0 else 0
         self.ui_update(
@@ -2551,18 +2507,24 @@ class MigrationEstimatorTool(ctk.CTk):
           processed=processed_groups,
           failed=groups_failed,
           total=total_groups,
-          extra_text="",
+          extra_text=f"Threads: {phase_threads}",
         )
 
         # Update stats
         for group in chunk:
           key = group["User ID / Group ID"]
-          group["Group Mail Count"] = chunk_result.get(key, 0)
+          group["Group Post Count"] = chunk_result_posts.get(key, 0)
+          group["Group Thread Count"] = chunk_result_threads.get(key, 0)
         
-        stats[resource_type] += chunk_total
+        stats[resource_type] += chunk_posts
+        stats["group_threads"] += chunk_threads
         
       if self.stop_scan_event.is_set():
         pending_groups_count = total_groups - processed_groups
+        self.log_msg(
+          f"Processed {processed_groups}/{total_groups} | Failed:"
+          f" {groups_failed}/{total_groups} | Skipped: {pending_groups_count}/{total_groups} | Threads: {phase_threads} | Posts: {phase_total}"
+        )
         self.ui_update(
           "scan_progress",
           entity_type="Group Mailboxes",
@@ -2574,7 +2536,7 @@ class MigrationEstimatorTool(ctk.CTk):
           failed=groups_failed,
           skipped=pending_groups_count,
           total=total_groups,
-          extra_text="",
+          extra_text=f"Threads: {phase_threads}",
         )
         executor.shutdown(wait=False, cancel_futures=True)
     except Exception as e:
@@ -2587,7 +2549,7 @@ class MigrationEstimatorTool(ctk.CTk):
         processed=total_groups,
         failed=total_groups - processed_groups + groups_failed,
         total=total_groups,
-        extra_text="",
+        extra_text=f"Threads: {phase_threads}",
       )
       self.log_msg(f"Error in group mail box scan: {e}")
     finally:
@@ -2634,7 +2596,7 @@ class MigrationEstimatorTool(ctk.CTk):
     has_calendar_data = any(r["Calendar Count"] > 0 for r in csv_rows)
     has_in_place_archives_data = any(r["In Place Archive Count"] > 0 for r in csv_rows)
     has_shared_mails_data = any(r["Shared Mail Count"] > 0 for r in shared_csv_rows)
-    has_group_mails_data = any(r["Group Mail Count"] > 0 for r in group_csv_rows)
+    has_group_mails_data = any(r["Group Post Count"] > 0 for r in group_csv_rows)
     failed_emails = []
     failed_contacts = []
     failed_calendars = []
@@ -2876,10 +2838,10 @@ class MigrationEstimatorTool(ctk.CTk):
     self.log_msg(f"Total Users / Groups: {len(csv_rows)}")
     self.log_msg(
         f"Emails: {stats['emails']} | Contacts: {stats['contacts']} |"
-        f" Calendars: {stats['calendars']} | Events: {stats['events']}"
+        f" Calendars: {stats['calendars']} | Events: {stats['events']} |"
         f" In Place Archives: {stats['in_place_archives']} |"
         f" Shared Mail Count: {stats['shared_mails']} |"
-        f" Group Mail Count: {stats['group_mails']}"
+        f" Group Mails: {stats['group_mails']} | Group Threads: {stats['group_threads']}"
     )
     self.log_msg(f"System: {total_cpu_cores} Cores, {total_ram_gb:.1f}GB RAM")
     self.log_msg(f"CPU Avg/Peak: {avg_cpu:.1f}% / {max_cpu:.1f}%")
@@ -2913,7 +2875,8 @@ class MigrationEstimatorTool(ctk.CTk):
     if config.scan_shared_mail_boxes:
       final_columns.append("Shared Mail Count")
     if config.scan_group_mail_boxes:
-      final_columns.append("Group Mail Count")
+      final_columns.append("Group Post Count")
+      final_columns.append("Group Thread Count")
 
     final_columns = [c for c in final_columns if c in df_output.columns]
     df_output = df_output[final_columns]
@@ -2956,6 +2919,7 @@ class MigrationEstimatorTool(ctk.CTk):
         "total_in_place_archives": stats["in_place_archives"],
         "total_shared_mails": stats["shared_mails"],
         "total_group_mails": stats["group_mails"],
+        "total_group_threads": stats["group_threads"],
         "total_items": (
             stats["emails"]
             + stats["contacts"]
@@ -2964,6 +2928,7 @@ class MigrationEstimatorTool(ctk.CTk):
             + stats["in_place_archives"]
             + stats["shared_mails"]
             + stats["group_mails"]
+            + stats["group_threads"]
         ),
         "total_eta": total_eta,
         "batches": batches,
@@ -3082,7 +3047,7 @@ class MigrationEstimatorTool(ctk.CTk):
 
   def calculate_migration_batches(self, df):
     # Ensure numeric columns
-    target_cols = ["Email Count", "Contact Count", "Event Count", "In Place Archive Count", "Shared Mail Count", "Group Mail Count"]
+    target_cols = ["Email Count", "Contact Count", "Event Count", "In Place Archive Count", "Shared Mail Count", "Group Post Count"]
     for col in target_cols:
       if col not in df.columns:
         df[col] = 0
@@ -3092,7 +3057,7 @@ class MigrationEstimatorTool(ctk.CTk):
     # 1. Sort Users (Descending - Heaviest first for optimal packing)
     df["SortMetric"] = df.apply(
         lambda x: max(
-            (x["Email Count"] + x["Shared Mail Count"] + x["Group Mail Count"]), (x["Event Count"] + x["Contact Count"]), x["In Place Archive Count"]
+            (x["Email Count"] + x["Shared Mail Count"] + x["Group Post Count"]), (x["Event Count"] + x["Contact Count"]), x["In Place Archive Count"]
         ),
         axis=1,
     )
@@ -3138,11 +3103,11 @@ class MigrationEstimatorTool(ctk.CTk):
     # Helper: Calculate ETA for subset
     config = self._get_scan_configuration()
     if ENABLE_IN_PLACE_ARCHIVE_ETA:
-      in_place_archive_estimator = EOInPlaceArchiveEstimator(config, None, None)
+      in_place_archive_estimator = self.factory.get_in_place_archive_estimator(use_delta_api=True)
     if ENABLE_SHARED_MAILBOX_ETA:
-      shared_mail_box_estimator = EOSharedMailBoxEstimator(config, None)
+      shared_mail_box_estimator = self.factory.get_shared_mailbox_estimator()
     if ENABLE_GROUP_MAILBOX_ETA:
-      group_mail_box_estimator = EOGroupMailBoxEstimator(config, None)
+      group_mail_box_estimator = self.factory.get_group_mailbox_estimator(hard_reset=True)
 
     def get_batch_eta(subset_df):
       eta_email = 0.0
@@ -3198,7 +3163,7 @@ class MigrationEstimatorTool(ctk.CTk):
       if ENABLE_GROUP_MAILBOX_ETA:
         eta_group_mail_box = group_mail_box_estimator.calculate_migration_eta(
           {
-            "item_counts": subset_df["Group Mail Count"].tolist(),
+            "item_counts": subset_df["Group Post Count"].tolist(),
             "global_limit": ETA_EMAIL_GLOBAL_LIMIT,
             "user_limit": ETA_EMAIL_USER_LIMIT,
             "batch_size": ETA_EMAIL_BATCH_SIZE,
@@ -3267,7 +3232,8 @@ class MigrationEstimatorTool(ctk.CTk):
             "total_events": int(final_subset["Event Count"].sum()),
             "total_in_place_archives": int(final_subset["In Place Archive Count"].sum()),
             "total_shared_mails": int(final_subset["Shared Mail Count"].sum()),
-            "total_group_mails": int(final_subset["Group Mail Count"].sum()),
+            "total_group_mails": int(final_subset["Group Post Count"].sum()),
+            "total_group_threads": int(final_subset["Group Thread Count"].sum()),
             "eta": w_eta,
         })
         start_idx = end_idx

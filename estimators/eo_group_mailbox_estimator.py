@@ -57,6 +57,7 @@ class EOGroupMailBoxEstimator(Estimator):
             thread_id_to_post_count = {thread_id: 10 for thread_id in thread_ids}
             # print(json.dumps(thread_id_to_post_count, indent=4))
             group_id_to_thread_count = self._consolidate_thread_post_counts_for_each_group(group_id_to_thread_ids, thread_id_to_post_count)
+            group_id_to_thread_ids_count = {group_id: len(threads) for group_id, threads in group_id_to_thread_ids.items()}
 
         except Exception as e:
             if self.logger:
@@ -66,7 +67,9 @@ class EOGroupMailBoxEstimator(Estimator):
                 "error": str(e),
                 "failureType": FailureType.UNKNOWN.value,
             })
-        return group_id_to_thread_count
+            return group_id_to_thread_count, {}
+            
+        return group_id_to_thread_count, group_id_to_thread_ids_count
 
     def calculate_migration_eta(self, data: Dict[str, Any]) -> float:
         return super().calculate_migration_eta(data)
@@ -208,7 +211,7 @@ class EOGroupMailBoxEstimator(Estimator):
                             self.logger(f"Error fetching threads for group {group_id}: {resp['body']['error']['message']}")
                 else:
                      if self.logger:
-                            self.logger(f"No response found for group {req['headers']['group_id']} thread API.")
+                            self.logger(f"No response found for group {self.get_display_name_from_id(req['headers']['group_id'])} thread API.")
 
         while pending_next_items and not self.is_hard_stop_requested():
             batches = create_batches("{url}", pending_next_items, self.config.parallel_batches, True)

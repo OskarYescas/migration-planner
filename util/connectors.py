@@ -438,10 +438,14 @@ class UrlInvoker():
                     logger(f"Max retries reached for batch in {context}. Data lost.")
                     break
 
-        if pending_requests:
+        if pending_requests and not (stop_event is None or not stop_event.is_set()):
             logger(
                 f"WARNING: Max retries ({max_retries}) reached in {context}."
                 f" {len(pending_requests)} items dropped permanently."
+            )
+        elif pending_requests and stop_event is not None and stop_event.is_set():
+            logger(
+                f"WARNING: Skipping retries due to stop event"
             )
 
         return successful_responses

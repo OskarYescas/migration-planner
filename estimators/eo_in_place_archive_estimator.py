@@ -411,7 +411,7 @@ class EOInPlaceArchiveEstimator(Estimator):
                         archived_mail_count[mail_box_id].increment(count)
                     except (ValueError, TypeError):
                         if self.logger:
-                            self.logger(f"Warning: Invalid totalItemCount '{sub_folder.get('totalItemCount')}' for mailbox {mail_box_id}. Skipping count.")
+                            self.logger(f"Warning: Invalid totalItemCount '{sub_folder.get('totalItemCount')}' for mailbox {self.get_display_name_from_id(mail_box_id)}. Skipping count.")
                         failures.append({
                             "mailboxId": mail_box_id,
                             "isPartial": True,
@@ -427,7 +427,7 @@ class EOInPlaceArchiveEstimator(Estimator):
                         child_count = int(sub_folder["childFolderCount"])
                     except (ValueError, TypeError):
                         if self.logger:
-                            self.logger(f"Warning: Invalid childFolderCount '{sub_folder.get('childFolderCount')}' for mailbox {mail_box_id}. Assuming 0.")
+                            self.logger(f"Warning: Invalid childFolderCount '{sub_folder.get('childFolderCount')}' for mailbox {self.get_display_name_from_id(mail_box_id)}. Assuming 0.")
                         failures.append({
                             "mailboxId": mail_box_id,
                             "isPartial": True,

@@ -29,10 +29,12 @@ class EOGroupMailBoxEstimator(Estimator):
             return False
         
         return self.stop_event.is_set()
+    
+    
 
     def get_group_id_to_mail_mapping(self):
         group_ids, group_mails = self._get_group_ids_for_tenant()
-        return dict(zip(group_ids, group_mails))
+        return [{"id": group_id, "mail": mail_id} for group_id, mail_id in zip(group_ids, group_mails)]
 
     # @param data --> Dictionary of param name to its value.
     # @param failures --> List of failures (it will be updated in place)
@@ -75,7 +77,7 @@ class EOGroupMailBoxEstimator(Estimator):
     def get_migration_type(self):
         return "EXCHANGE_ONLINE"
 
-    def _get_group_ids_for_tenant(self) -> List:
+    def _get_group_ids_for_tenant(self) -> List:    
         group_ids: List[str] = []
         graph_user_endpoint = "/groups?$select=id,mail&$top=999"
         

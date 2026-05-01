@@ -370,7 +370,11 @@ class UrlInvoker():
                         if stop_event and stop_event.is_set():
                             break
 
-                        time.sleep(sleep_time)
+                        if stop_event:
+                            if stop_event.wait(timeout=sleep_time):
+                                break
+                        else:
+                            time.sleep(sleep_time)
                         pending_requests = next_retry_requests
                     else:
                         pending_requests = []
@@ -391,7 +395,11 @@ class UrlInvoker():
                         f"Batch 429 Throttled. Waiting {wait:.1f}s (Requested:"
                         f" {raw_wait}s)..."
                     )
-                    time.sleep(wait)
+                    if stop_event:
+                        if stop_event.wait(timeout=wait):
+                            break
+                    else:
+                        time.sleep(wait)
                     continue
                 elif resp.status_code == 401:
                     # Handle outer batch 401 (entire batch rejected due to token expiry)
@@ -420,7 +428,11 @@ class UrlInvoker():
                 if current_try < max_retries:
                     if stop_event and stop_event.is_set():
                         break
-                    time.sleep(min(2 * current_try, 30))
+                    if stop_event:
+                        if stop_event.wait(timeout=min(2 * current_try, 30)):
+                            break
+                    else:
+                        time.sleep(min(2 * current_try, 30))
                     continue
                 else:
                     logger(f"Max retries reached for batch in {context}. Data lost.")

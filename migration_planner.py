@@ -428,6 +428,7 @@ class MigrationEstimatorTool(ctk.CTk):
     self.eta_max_batches = ctk.IntVar(value=50)
     self.parallel_batches = ctk.IntVar(value=10)
     self.scan_result_csv_path = ctk.StringVar()
+    self.id_to_display_name = {}
 
   def create_widgets(self):
     """Creates the main UI layout."""
@@ -816,7 +817,7 @@ class MigrationEstimatorTool(ctk.CTk):
     self.scan_container.pack(fill="x", padx=25, pady=20)
 
     self.create_progress_row(
-        self.scan_container, "users", "Scanning Users", is_user=True
+        self.scan_container, "entities", "Scanning Entities", is_user=True
     )
     self.prog_widgets = {}
 
@@ -1421,7 +1422,7 @@ class MigrationEstimatorTool(ctk.CTk):
         top, text=title, font=FONT_BODY_BOLD, text_color=COLOR_TEXT_MAIN
     ).pack(side="left")
 
-    if is_user or key == "users":
+    if is_user or key == "entities":
       bar = ctk.CTkProgressBar(
           f,
           height=8,
@@ -1453,7 +1454,7 @@ class MigrationEstimatorTool(ctk.CTk):
         "lbl": lbl_status,
         "icon": lbl_icon,
     }
-    if key == "users":
+    if key in ["users", "entities"]:
       self.prog_user = bar
       self.lbl_user_status = lbl_status
 
@@ -1690,13 +1691,13 @@ class MigrationEstimatorTool(ctk.CTk):
         if "users" in self.prog_widgets:
           widget = self.prog_widgets["users"]["lbl"]
           if widget.winfo_exists():
-            text = f"{count} entities (users, shared mailboxes or groups)"
+            text = f"{count} entities (users / shared mailboxes / group mailboxes)"
             if user_count > 0:
-              text += f" | {user_count} users"
+              text += f" | {user_count} users" if user_count > 1 else f" | {user_count} user"
             if shared_mailbox_count > 0:
-              text += f" | {shared_mailbox_count} shared mailboxes"
+              text += f" | {shared_mailbox_count} shared mailboxes" if shared_mailbox_count > 1 else f" | {shared_mailbox_count} shared mailbox"
             if group_count > 0:
-              text += f" | {group_count} groups"
+              text += f" | {group_count} groups" if group_count > 1 else f" | {group_count} group"
             widget.configure(
                 text=text
             )
@@ -1755,6 +1756,7 @@ class MigrationEstimatorTool(ctk.CTk):
         users_partially_failed = msg.get("partially_failed", 0)
         users_skipped = msg.get("skipped", 0)
         users_tot = msg.get("total", 0)
+        entity_type = msg.get("entity_type", "Users")
         if source in self.prog_widgets:
           widget = self.prog_widgets[source]["bar"]
           if widget.winfo_exists():
@@ -1765,7 +1767,7 @@ class MigrationEstimatorTool(ctk.CTk):
             if widget_lbl.winfo_exists():
               widget_lbl.configure(
                   text=(
-                      f"Users: {users_proc - users_fail} succeeded , {users_fail}"
+                      f"{entity_type}: {users_proc - users_fail} succeeded , {users_fail}"
                       f" failed | {extra}"
                   )
               )
@@ -1792,7 +1794,7 @@ class MigrationEstimatorTool(ctk.CTk):
             widget_lbl = self.prog_widgets[source]["lbl"]
             if widget_lbl.winfo_exists():
               text_parts = [
-                  f"Users: {users_proc - users_fail - users_partially_failed} succeeded",
+                  f"{entity_type}: {users_proc - users_fail - users_partially_failed} succeeded",
                   f"{users_fail} failed"
               ]
               
@@ -1852,7 +1854,7 @@ class MigrationEstimatorTool(ctk.CTk):
     self.prog_widgets = {}
 
     self.create_progress_row(
-        self.scan_container, "users", "Scanning Users", is_user=True
+        self.scan_container, "users", "Scanning Entities", is_user=True
     )
     self.prog_user.start()
     if self.scan_email.get():
@@ -1925,6 +1927,9 @@ class MigrationEstimatorTool(ctk.CTk):
       csv_rows, stats = self._prepare_batch_list(
           config, all_users, existing_data, groups, shared_mailboxes
       )
+
+      for row in csv_rows:
+        self.id_to_display_name[row["User ID / Group ID"]] = row["User Principal Name / Group Mail"]
 
       user_csv_rows = [row for row in csv_rows if row["Type"] == "User"]
       shared_csv_rows = [row for row in csv_rows if row["Type"] == "Shared"]
@@ -2400,6 +2405,7 @@ class MigrationEstimatorTool(ctk.CTk):
         prog = processed_users / total_users if total_users > 0 else 0
         self.ui_update(
           "scan_progress",
+          entity_type="Users" if resource_type == "in_place_archives" else "Shared Mailboxes",
           source=resource_type,
           progress=prog,
           cumulative=phase_total,
@@ -2426,6 +2432,7 @@ class MigrationEstimatorTool(ctk.CTk):
         pending_users_count = total_users - processed_users
         self.ui_update(
           "scan_progress",
+          entity_type="Users" if resource_type == "in_place_archives" else "Shared Mailboxes",
           source=resource_type,
           progress=1.0,
           cumulative=phase_total,
@@ -2440,6 +2447,7 @@ class MigrationEstimatorTool(ctk.CTk):
     except Exception as e:
       self.ui_update(
         "scan_progress",
+        entity_type="Users" if resource_type == "in_place_archives" else "Shared Mailboxes",
         source=resource_type,
         progress=1.0,
         cumulative=phase_total,
@@ -2536,6 +2544,7 @@ class MigrationEstimatorTool(ctk.CTk):
         prog = processed_groups / total_groups if total_groups > 0 else 0
         self.ui_update(
           "scan_progress",
+          entity_type="Group Mailboxes",
           source=resource_type,
           progress=prog,
           cumulative=phase_total,
@@ -2556,6 +2565,7 @@ class MigrationEstimatorTool(ctk.CTk):
         pending_groups_count = total_groups - processed_groups
         self.ui_update(
           "scan_progress",
+          entity_type="Group Mailboxes",
           source=resource_type,
           progress=1.0,
           cumulative=phase_total,
@@ -2570,6 +2580,7 @@ class MigrationEstimatorTool(ctk.CTk):
     except Exception as e:
       self.ui_update(
         "scan_progress",
+        entity_type="Group Mailboxes",
         source=resource_type,
         progress=1.0,
         cumulative=phase_total,
@@ -2735,6 +2746,7 @@ class MigrationEstimatorTool(ctk.CTk):
         self.ui_update("phase_status", source="shared_mails", status="running")
         self.ui_update(
             "scan_progress",
+            entity_type="Shared Mailboxes",
             source="shared_mails",
             progress=1.0,
             cumulative=stats["shared_mails"],
@@ -2755,6 +2767,7 @@ class MigrationEstimatorTool(ctk.CTk):
         self.ui_update("phase_status", source="group_mails", status="running")
         self.ui_update(
             "scan_progress",
+            entity_type="Group Mailboxes",
             source="group_mails",
             progress=1.0,
             cumulative=stats["group_mails"],
@@ -2788,19 +2801,22 @@ class MigrationEstimatorTool(ctk.CTk):
       if failed_in_place_archives:
         self.log_msg("In Place Archive Migration Failures")
         for f in failed_in_place_archives:
-          self.log_msg(f"User: {f['user']} | Cause: {f['cause']}")
+          user_upn = self.id_to_display_name[f["user"]] if f["user"] in self.id_to_display_name else f["user"]
+          self.log_msg(f"User: {user_upn} | Cause: {f['cause']}")
         self.log_msg("")  # Add blank line
       
       if failed_shared_mails:
         self.log_msg("Shared Mail Box Migration Failures")
         for f in failed_shared_mails:
-          self.log_msg(f"Shared Mail Box: {f['user']} | Cause: {f['cause']}")
+          shared_mailbox_upn = self.id_to_display_name[f["user"]] if f["user"] in self.id_to_display_name else f["user"]
+          self.log_msg(f"Shared Mail Box: {shared_mailbox_upn} | Cause: {f['cause']}")
         self.log_msg("")  # Add blank line
       
       if failed_group_mails:
         self.log_msg("Group Mail Box Migration Failures")
         for f in failed_group_mails:
-          self.log_msg(f"Group: {f['group']} | Cause: {f['cause']}")
+          group_name = self.id_to_display_name[f["group"]] if f["group"] in self.id_to_display_name else f["group"]
+          self.log_msg(f"Group: {group_name} | Cause: {f['cause']}")
         self.log_msg("")  # Add blank line
 
       self.log_msg("=" * 40)

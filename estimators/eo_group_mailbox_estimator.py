@@ -46,7 +46,7 @@ class EOGroupMailBoxEstimator(Estimator):
             if not group_ids or None in group_ids:
                 group_ids, group_mails = self._get_group_ids_for_tenant()
 
-            group_id_to_thread_ids = self._get_thread_ids_for_groups(group_ids)    # test using the first group
+            group_id_to_thread_ids = self._get_thread_ids_for_groups(group_ids, failures)    # test using the first group
 
             thread_id_to_post_count = self._get_post_count_for_threads(group_id_to_thread_ids, failures)
             group_id_to_thread_count = self._consolidate_thread_post_counts_for_each_group(group_id_to_thread_ids, thread_id_to_post_count)
@@ -155,7 +155,7 @@ class EOGroupMailBoxEstimator(Estimator):
                         
         return group_ids, group_mails
 
-    def _get_thread_ids_for_groups(self, group_ids: List[str]) -> Dict[str, List[str]]:
+    def _get_thread_ids_for_groups(self, group_ids: List[str], failures: List[Dict[str, str]]) -> Dict[str, List[str]]:
         # print("Starting Thread Count")
         group_to_thread_ids: Dict[str, List[str]] = {group_id: [] for group_id in group_ids}
         
@@ -200,11 +200,21 @@ class EOGroupMailBoxEstimator(Estimator):
                             "url": relative_url
                         })
                     elif "body" in resp and "error" in resp["body"]:
-                        if self.logger:
-                            self.logger(f"Error fetching threads for group {group_id}: {resp['body']['error']['message']}")
+                        failures.append({
+                            "groupId": group_id,
+                            "isPartial": False,
+                            "type": FailureType.FAILURE_STATUS_CODE_ERROR,
+                            "statusCode": resp["status"],
+                            "message": resp["body"]["error"]["message"]
+                        })
                 else:
-                     if self.logger:
-                            self.logger(f"[WARNING] No response found for group {self.get_display_name_from_id(req['headers']['group_id'])} thread API.")
+                    failures.append({
+                        "groupId": req["headers"]["group_id"],
+                        "isPartial": False,
+                        "type": FailureType.NOT_FOUND,
+                        "statusCode": None,
+                        "message": "No response from thread API."
+                    })
 
         while pending_next_items and not self.is_hard_stop_requested():
             batches = create_batches("{url}", pending_next_items, self.config.parallel_batches, True)

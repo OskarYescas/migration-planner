@@ -2111,8 +2111,9 @@ class MigrationEstimatorTool(ctk.CTk):
           required_scopes.append("Mail.Read")
       if config.scan_in_place_archives and not have_in_place_archives:
         required_scopes.append("MailboxFolder.Read.All")
+      if config.scan_group_mail_boxes and not have_group_mailboxes:
+        required_scopes.append("Group.Read.All")
 
-      # TODO Check for permissions for groups
       manager.authenticate_all(self.log_msg, required_scopes=required_scopes)
       if one_token_per_app_manager:
         one_token_per_app_manager.authenticate_all(self.log_msg, required_scopes=[

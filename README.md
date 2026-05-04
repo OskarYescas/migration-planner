@@ -1,6 +1,6 @@
 # Migration Planner Tool
 
-**Doc version: v0.5.1**
+**Doc version: v1.0.0**
 
 ## DISCLAIMER
 
@@ -184,7 +184,7 @@ You will need three values for the tool:
 *   **User Source**:
     *   **Scan All Users**: Automatically fetches every user in your tenant.
     *   **Upload CSV**: Allows you to scan a specific subset of users or pre-load existing counts.
-    *   **CSV Format**: Must contain a header **Email Id** (e.g., `user@domain.com`).
+    *   **CSV Format**: Must contain a header **Email Id** (e.g., `user@domain.com`). Also if Group Mailbox estimation is required then a column called `"Type"` is needed to segregate group mailbox IDs from user/shared mailbox IDs. The correct values for Type column are `"User"`, `"Shared"`, `"Group Mailbox"`.
     *   **Smart Delta Scan**: If your CSV already contains columns like `Email Count`, `Contact Count`, `Calendar Count`, `Calendar Event Count`, `In-Place Archive Count` or `Group Mailbox Count`, the tool will skip scanning those specific items and use your provided numbers, speeding up the process significantly.
 
 ### 2. Advanced Settings

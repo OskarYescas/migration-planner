@@ -268,19 +268,55 @@ class EOGroupMailBoxEstimator(Estimator):
             
         post_api = "groups/{group_id}/threads/{thread_id}/posts?$count=true&$select=id&$top=1"
         
-        batches = create_batches(post_api, flattened_items, self.config.parallel_batches, True)
+        # Optimize Batch Size
+        optimal_batch_size = min(self.config.parallel_batches, min(20, len(group_id_to_thread_ids)))
+        batches = create_batches(post_api, flattened_items, optimal_batch_size, True)
+        
+        # Refine batches to ensure no duplicate groups in any batch
+        refined_batches = []
+        for batch in batches:
+            group_counts = {}
+            for req in batch:
+                gid = req["headers"]["group_id"]
+                group_counts[gid] = group_counts.get(gid, 0) + 1
+            
+            if max(group_counts.values(), default=0) <= 1:
+                refined_batches.append(batch)
+            else:
+                # Split batch so each sub-batch has only threads from distinct groups
+                grouped_by_gid = {}
+                for req in batch:
+                    gid = req["headers"]["group_id"]
+                    if gid not in grouped_by_gid:
+                        grouped_by_gid[gid] = []
+                    grouped_by_gid[gid].append(req)
+                
+                max_len = max(len(reqs) for reqs in grouped_by_gid.values())
+                for i in range(max_len):
+                    new_sub_batch = []
+                    for gid, reqs in grouped_by_gid.items():
+                        if i < len(reqs):
+                            new_sub_batch.append(reqs[i])
+                    refined_batches.append(new_sub_batch)
+                    
+        batches = refined_batches
         
         futures_map: Dict[int, Future[List[Dict[str, Any]]]] = {}
         batch_id_to_batch_map: Dict[int, List[Dict[str, Any]]] = {}
         idx = 0
-        for batch in batches:
-            futures_map[idx] = self.archive_executor.submit(self.url_invoker.invoke, GRAPH_BASE_URL, batch, self.logger, self.stop_event, self.get_resource_type())
-            batch_id_to_batch_map[idx] = batch
-            idx += 1
-
+        
+        # Optimize Threadpool Size locally
+        optimal_concurrency = min(4, self.config.concurrency)
         response_map: Dict[int, List[Dict[str, Any]]] = {}
-        for batch_id, future in futures_map.items():
-            response_map[batch_id] = future.result()
+        
+        with ThreadPoolExecutor(max_workers=optimal_concurrency) as local_executor:
+            for batch in batches:
+                futures_map[idx] = local_executor.submit(self.url_invoker.invoke, GRAPH_BASE_URL, batch, self.logger, self.stop_event, self.get_resource_type())
+                batch_id_to_batch_map[idx] = batch
+                idx += 1
+
+            for batch_id, future in futures_map.items():
+                response_map[batch_id] = future.result()
 
         granular_request_to_response_pairs = create_request_to_response_map(batch_id_to_batch_map, response_map, failures)
         

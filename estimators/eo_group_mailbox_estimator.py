@@ -48,14 +48,7 @@ class EOGroupMailBoxEstimator(Estimator):
 
             group_id_to_thread_ids = self._get_thread_ids_for_groups(group_ids)    # test using the first group
 
-            # print(json.dumps(group_id_to_thread_ids, indent=4))
-            # thread_id_to_post_count = self._get_post_count_for_threads(group_id_to_thread_ids, failures)
-            thread_ids = []
-            for group_id, threads in group_id_to_thread_ids.items():
-                thread_ids.extend(threads)
-
-            thread_id_to_post_count = {thread_id: 10 for thread_id in thread_ids}
-            # print(json.dumps(thread_id_to_post_count, indent=4))
+            thread_id_to_post_count = self._get_post_count_for_threads(group_id_to_thread_ids, failures)
             group_id_to_thread_count = self._consolidate_thread_post_counts_for_each_group(group_id_to_thread_ids, thread_id_to_post_count)
             group_id_to_thread_ids_count = {group_id: len(threads) for group_id, threads in group_id_to_thread_ids.items()}
 

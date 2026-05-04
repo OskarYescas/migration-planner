@@ -200,12 +200,11 @@ class TestEOGroupMailBoxEstimator(unittest.TestCase):
         
         self.assertEqual(result, {"group1": 0})
         self.assertEqual(thread_ids_count, {"group1": 0})
-        # Failures are logged but not necessarily returned in failures list for thread API failures in current implementation of _get_thread_ids_for_groups (it just logs warning or error but doesn't append to failures list passed to calculate_resource_count)
-        # Let's check the code again.
-        # In _get_thread_ids_for_groups:
-        # line 211: self.logger(f"Error fetching threads for group {group_id}: {resp['body']['error']['message']}")
-        # It doesn't take failures list as argument. So failures list will be empty unless an exception escapes.
-        self.assertEqual(len(failures), 0)
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["groupId"], "group1")
+        self.assertEqual(failures[0]["isPartial"], False)
+        self.assertEqual(failures[0]["type"], FailureType.FAILURE_STATUS_CODE_ERROR)
+        self.assertEqual(failures[0]["statusCode"], 500)
 
     def test_calculate_resource_count_api_error_posts(self):
         def mock_invoke(base_url, batch, logger, stop_event, resource_type):

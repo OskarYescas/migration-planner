@@ -3370,6 +3370,8 @@ class MigrationEstimatorTool(ctk.CTk):
     return users
 
   def _resolve_from_csv(self, manager, emails, url = None):
+    if not emails:
+      return []
     resolved = []
     if url is None:
       url = ("{GRAPH_BASE_URL}/users?$filter=userPrincipalName eq"

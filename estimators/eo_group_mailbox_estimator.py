@@ -75,7 +75,7 @@ class EOGroupMailBoxEstimator(Estimator):
 
     def _get_group_ids_for_tenant(self) -> List:    
         group_ids: List[str] = []
-        graph_user_endpoint = "/groups?$select=id,mail&$top=999"
+        graph_user_endpoint = "/groups?$filter=not(resourceProvisioningOptions/any(x:x eq 'Team'))&$select=id,mail&$top=999"
         
         # We use a dummy placeholder to create a batch request.
         # This allows us to reuse the batching and pagination utilities.

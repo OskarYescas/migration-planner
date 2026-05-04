@@ -2849,7 +2849,7 @@ class MigrationEstimatorTool(ctk.CTk):
         f"Emails: {stats['emails']} | Contacts: {stats['contacts']} |"
         f" Calendars: {stats['calendars']} | Events: {stats['events']} |"
         f" In Place Archives: {stats['in_place_archives']} |"
-        f" Shared Mail Count: {stats['shared_mails']} |"
+        f" Shared Mails: {stats['shared_mails']} |"
         f" Group Mails: {stats['group_mails']} | Group Threads: {stats['group_threads']}"
     )
     self.log_msg(f"System: {total_cpu_cores} Cores, {total_ram_gb:.1f}GB RAM")

@@ -2,6 +2,18 @@
 
 **Doc version: v1.0.0**
 
+## What's new
+
+- **In-place Archives**: Support for getting the count of emails in the in-place archive (alternatively known as online archive) of users is added.
+- **Group Mailboxes**: Support for getting the thread and mail (also called posts) count for each group provided / present in a tenant is added.
+
+#### UX change to support new features
+- When starting the estimations, the first progress bar now would display the text `Scanning Entities` instead of `Scanning Users` to indicate that we are scanning for both users and groups. Also the count subtext would now show the split of number of users and group mailboxes.
+- When using the CSV based flow, script users should specify a new column in the CSV called `Type` to distinguish users from group mailboxes. Note that this is not needed if group mailbox estimations are not required or if the Full scan mode is being used. Compatible values for this column are `User`and `Group Mailbox`.
+
+#### System behaviour changes
+- While the concurrency numbers set in the `Advanced Settings` is still linearly proportional to the number of actual active threads, it won't represent the **EXACT** number of threads being spawned for estimating resources like `In-Place Archives` and `Group Mailboxes`. This is by design and is done to balance latency with resource usage.
+
 ## DISCLAIMER
 
  *   The estimations provided by this tool are calculated projections intended for preliminary planning only. Actual migration timelines (ETAs) and batch execution may vary based on real-time network conditions, source/target throttling policies, migration configurations, and the volume of delta migrations. The estimations do not constitute a performance guarantee or a binding service level agreement (SLA).
@@ -148,7 +160,9 @@ To scan your tenant, you need to register an app in the Microsoft Entra ID (form
     *   `Contacts.Read` (To count contacts)
     *   `Calendars.Read` (To count calendar events)
     *   `MailboxFolder.Read.All` (To count emails in in-place archives)
-    *   `MailboxSettings.Read` (To distinguish user and group mailboxes)
+    *   `MailboxSettings.Read` (To distinguish user and shared mailboxes)
+    *   `Group.Read.All` (To get group information)
+
 4.  Click **Add permissions**.
 5.  **Crucial Step**: Click **"Grant admin consent for [Your Organization]"** and confirm "Yes". All status icons should turn green.
 
@@ -184,8 +198,8 @@ You will need three values for the tool:
 *   **User Source**:
     *   **Scan All Users**: Automatically fetches every user in your tenant.
     *   **Upload CSV**: Allows you to scan a specific subset of users or pre-load existing counts.
-    *   **CSV Format**: Must contain a header **Email Id** (e.g., `user@domain.com`). Also if Group Mailbox estimation is required then a column called `"Type"` is needed to segregate group mailbox IDs from user/shared mailbox IDs. The correct values for Type column are `"User"`, `"Shared"`, `"Group Mailbox"`.
-    *   **Smart Delta Scan**: If your CSV already contains columns like `Email Count`, `Contact Count`, `Calendar Count`, `Calendar Event Count`, `In-Place Archive Count` or `Group Mailbox Count`, the tool will skip scanning those specific items and use your provided numbers, speeding up the process significantly.
+    *   **CSV Format**: Must contain a header **Email Id** (e.g., `user@domain.com`). Also if Group Mailbox estimation is required then a column called `"Type"` is needed to segregate group mailbox IDs from user mailbox IDs. The correct values for Type column are `"User"`, `"Group Mailbox"`.
+    *   **Smart Delta Scan**: If your CSV already contains columns like `Email Count`, `Contact Count`, `Calendar Count`, `Calendar Event Count`, `In-Place Archive Count` or `Group Mail Count`, `Group Thread Count`, the tool will skip scanning those specific items and use your provided numbers, speeding up the process significantly.
 
 ### 2. Advanced Settings
 Click **"Show Advanced Settings"** to tune the performance:
@@ -206,6 +220,7 @@ Once started, you will see a real-time progress screen:
     *   Show percentage completion for Users, Emails, Contacts, Calendars, In-Place Archives and Group Mails.
     *   Each spinner and progress bar should correspond to one of the sources selected for the scan. If a user did not select a certain source, the spinner and progress bar for that source should not be visible.
     *   Specifically for In-Place archives the progress bar would also display the number of users for which partial failures were observed
+
 *   **Live Counts**: Updates in real-time as items are discovered.
 
 ---
@@ -221,7 +236,7 @@ The top cards display the total scope of the migration:
 The tool calculates an Estimated Completion Time (ETA) based on the email corpus using a heuristic based logic:
 *   **User Ordering**: Users are sorted in Ascending Order (Lightest users -> Heaviest users). The lightest users are packed into Batch 1, while the heaviest users usually end up in the final batches.
 *   Max(Emails , (Calendar Events + Contacts), In-Place Archives, Group Mails) determines the sorting logic.
-*   **Batch ETAs**: Calculated based on the email corpus present in the batch.
+*   **Batch ETAs**: Calculated based on the regular emails, in-place archived emails and group mails corpus present in the batch.
 *   **Bucketing**: Batches are distributed into Parallel Buckets.
     *   **Example**: If you selected 4 parallel batches, the tool creates 4 "lanes". As soon as Batch 1 finishes in Lane 1, Batch 5 immediately starts in that same lane.
 *   **Total ETA** = The duration of the single longest bucket(lane).

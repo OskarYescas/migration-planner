@@ -425,7 +425,7 @@ class MigrationEstimatorTool(ctk.CTk):
     self.load_multiplier = ctk.IntVar(value=1)
     self.retries = ctk.IntVar(value=MAX_RETRIES)
     self.backoff = ctk.IntVar(value=BACKOFF)
-    self.eta_min_users = ctk.IntVar(value=200)
+    self.eta_min_users = ctk.IntVar(value=400)
     self.eta_max_users = ctk.IntVar(value=5000)
     self.eta_max_batches = ctk.IntVar(value=50)
     self.parallel_batches = ctk.IntVar(value=10)

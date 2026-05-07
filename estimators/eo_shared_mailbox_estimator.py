@@ -1,0 +1,128 @@
+from concurrent.futures import Future, ThreadPoolExecutor
+import threading
+from typing import Any, Callable, Dict, List, Optional
+
+from estimators.estimator import Estimator
+from util.connectors import TokenManager, UrlInvoker
+from util.utils import ScanConfig, create_batches, create_request_to_response_map
+from util.enums import FailureType
+
+GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+
+class EOSharedMailBoxEstimator(Estimator):
+    def __init__(self,
+        config: ScanConfig, 
+        url_invoker: UrlInvoker, 
+        logger: Optional[Callable[[str], None]] = None, 
+        stop_event: Optional[threading.Event] = None
+    ):
+        self.config = config
+        self.url_invoker = url_invoker
+        self.logger = logger
+        self.stop_event = stop_event
+        self.archive_executor = ThreadPoolExecutor(max_workers=self.config.concurrency)
+
+    def calculate_resource_count(self, data: Dict[str, Any], failures: List[Dict[str, str]]) -> Dict[str, int]:
+        user_ids: List[str] = data["user_ids"]
+        if not user_ids or None in user_ids:
+            raise Exception("Invalid user ids provided. Please check the list and ensure all the IDs are non-null.")
+        mailbox_to_count = self.get_shared_mail_box_count(user_ids, failures)
+        
+        # Creating a new map to account for the fact that the user might not have a shared mailbox. 
+        user_to_count = {user_id: 0 for user_id in user_ids}
+        for user_id, count in mailbox_to_count.items():
+            user_to_count[user_id] = count
+            
+        return user_to_count
+
+    def calculate_migration_eta(self, data: Dict[str, Any]) -> float:
+        return super().calculate_migration_eta(data)
+    
+    def get_resource_type(self):
+        return "SHARED_MAILBOX"
+    
+    def get_migration_type(self):
+        return "EXCHANGE_ONLINE"
+
+    def _get_shared_mail_boxes(self, user_ids: List[str], failures: List[Dict[str, str]]) -> List[str]:
+        # Filter out the shared mail boxes the provided list. 
+        mailbox_setting_endpoint = "/users/{userId}/mailboxSettings/userPurpose"
+        
+        batch_id_to_batch_map: Dict[int, List[Dict[str, Any]]] = {}
+        batch_id_to_future_map: Dict[int, Future[List[Dict[str, Any]]]] = {}
+        user_id_maps = [{"userId": user_id} for user_id in user_ids]
+        user_batches = create_batches(mailbox_setting_endpoint, user_id_maps, self.config.parallel_batches, True)
+
+        idx = 0
+        for batch in user_batches:
+            batch_id_to_batch_map[idx] = batch
+            batch_id_to_future_map[idx] = self.archive_executor.submit(self.url_invoker.invoke, GRAPH_BASE_URL, batch, self.logger, self.stop_event, self.get_resource_type())
+            idx += 1
+
+        batch_id_to_responses_map: Dict[int, List[Dict[str, Any]]] = {}
+
+        for batch_id, future in batch_id_to_future_map.items():
+            batch_id_to_responses_map[batch_id] = future.result()
+
+        granular_request_to_response_pairs = create_request_to_response_map(batch_id_to_batch_map, batch_id_to_responses_map, failures)
+        shared_mail_box_ids = []
+        for request_response_pair in granular_request_to_response_pairs:
+            if "body" in request_response_pair.response and "value" in request_response_pair.response["body"]:
+                if request_response_pair.response["body"]["value"] == "shared":
+                    shared_mail_box_ids.append(request_response_pair.request["headers"]["userId"])
+            else:
+                failures.append({
+                    "userId": request_response_pair.request["headers"]["userId"],
+                    "type": FailureType.INVALID_DATA,
+                    "statusCode": 200,
+                    "message": "Invalid data - userPurpose not present in response"
+                })
+        return shared_mail_box_ids
+
+    def get_shared_mail_box_count(self, user_ids: List[str], failures: List[Dict[str, str]]) -> Dict[str, int]:
+        shared_mailbox_ids = self._get_shared_mail_boxes(user_ids, failures)
+
+        shared_mail_count_endpoint = "/users/{userId}/messages?$count=true&$top=1&$select=id"
+        shared_mail_box_batches = create_batches(shared_mail_count_endpoint, [{"userId": mail_id} for mail_id in shared_mailbox_ids], self.config.parallel_batches, True)
+
+        batch_id_to_batch_map: Dict[int, List[Dict[str, Any]]] = {}
+        batch_id_to_future_map: Dict[int, Future[List[Dict[str, Any]]]] = {}
+        batch_id_to_responses_map: Dict[int, List[Dict[str, Any]]] = {}
+        
+        idx = 0
+        for batch in shared_mail_box_batches:
+            batch_id_to_batch_map[idx] = batch
+            batch_id_to_future_map[idx] = self.archive_executor.submit(self.url_invoker.invoke, GRAPH_BASE_URL, batch, self.logger, self.stop_event, self.get_resource_type())
+            idx += 1
+
+        for batch_id, future in batch_id_to_future_map.items():
+            batch_id_to_responses_map[batch_id] = future.result()
+            
+        granular_request_to_response_pairs = create_request_to_response_map(batch_id_to_batch_map, batch_id_to_responses_map, failures)
+
+        shared_mailbox_to_count: Dict[str, int] = {}
+        for request_response_pair in granular_request_to_response_pairs:
+            request = request_response_pair.request
+            response = request_response_pair.response
+            if "body" in response and "@odata.count" in response["body"]:
+                try:
+                    shared_mailbox_to_count[request["headers"]["userId"]] = int(response["body"]["@odata.count"])
+                except Exception as e:
+                    failures.append({
+                        "userId": request["headers"]["userId"],
+                        "type": FailureType.INVALID_DATA,
+                        "statusCode": 200,
+                        "message": f"Invalid data - Unable to convert count to integer: {e}"
+                    })
+                    shared_mailbox_to_count[request["headers"]["userId"]] = 0
+            else:
+                failures.append({
+                    "userId": request["headers"]["userId"],
+                    "type": FailureType.INVALID_DATA,
+                    "statusCode": 200,
+                    "message": "Invalid data - No count present in response"
+                })
+                shared_mailbox_to_count[request["headers"]["userId"]] = 0
+
+        return shared_mailbox_to_count
+        

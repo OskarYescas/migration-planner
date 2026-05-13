@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 from estimators.eo_in_place_archive_estimator import EOInPlaceArchiveEstimator
-from util.connectors import TokenManager, UrlInvoker
+from util.auth_manager import TokenManager
+from util.connectors import UrlInvoker
 from util.utils import ScanConfig
 from util.enums import FailureType
 import threading

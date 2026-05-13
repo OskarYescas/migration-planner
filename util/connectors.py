@@ -19,181 +19,7 @@ BACKOFF = 2
 SHOW_LOAD_MULTIPLIER = False
 USE_MSFT_BACKOFF = False
 
-class TokenManager:
-  """Manages Microsoft Graph API tokens with rotation and concurrency.
-
-  Handles authentication for multiple client applications to distribute
-  load and avoid rate limiting.
-  """
-
-  def __init__(
-      self,
-      tenant_id: str,
-      client_ids: List[str],
-      client_secrets: List[str],
-      concurrency: int,
-      retries: int,
-      backoff: int,
-  ):
-    self.tenant_id = tenant_id
-    self.apps = list(zip(client_ids, client_secrets))
-    self.concurrency = concurrency
-    self.retries = retries
-    self.backoff = backoff
-    self.token_queue: queue.Queue = queue.Queue()
-    self.session = self._create_retry_session()
-    self.tokens: List[Dict[str, Any]] = []
-
-  def _create_retry_session(self) -> requests.Session:
-    """Creates a requests session with retry logic."""
-    session = requests.Session()
-    session.verify = False
-    retries = Retry(
-        total=self.retries,
-        backoff_factor=self.backoff,
-        status_forcelist=[500, 502, 503, 504],
-        allowed_methods=["GET", "POST"],
-    )
-    total_pool_size = len(self.apps) * self.concurrency * 2 + 100
-    adapter = HTTPAdapter(
-        max_retries=retries,
-        pool_connections=total_pool_size,
-        pool_maxsize=total_pool_size,
-    )
-    session.mount("https://", adapter)
-    return session
-
-  def authenticate_all(
-      self,
-      logger: Callable[[str], None],
-      required_scopes: Optional[List[str]] = None,
-  ) -> None:
-    """Authenticates all configured applications and verifies permissions.
-
-    Args:
-        logger: Function to log messages.
-        required_scopes: List of permission scopes required (e.g.,
-          ['User.Read.All']).
-
-    Raises:
-        Exception: If authentication fails or required permissions are missing.
-    """
-    logger(f"Authenticating {len(self.apps)} apps...")
-    url = TOKEN_URL_TEMPLATE.format(self.tenant_id)
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-    for client_id, client_secret in self.apps:
-      data = {
-          "client_id": client_id,
-          "scope": "https://graph.microsoft.com/.default",
-          "client_secret": client_secret,
-          "grant_type": "client_credentials",
-      }
-      try:
-        resp = self.session.post(url, headers=headers, data=data)
-        resp.raise_for_status()
-
-        token_resp = resp.json()
-        token = token_resp["access_token"]
-        expires_in = token_resp.get("expires_in", 3599)
-
-        token_data = {
-            "token": token,
-            "expires_at": time.time() + int(expires_in) - 900,
-            "client_id": client_id,
-            "client_secret": client_secret,
-        }
-
-        if required_scopes:
-          try:
-            # Decode JWT Payload (No signature verification needed for client-side check)
-            payload_part = token.split(".")[1]
-            payload_part += "=" * (-len(payload_part) % 4)
-            decoded_bytes = base64.urlsafe_b64decode(payload_part)
-            payload = json.loads(decoded_bytes)
-
-            granted_roles = set(payload.get("roles", []))
-            missing = [s for s in required_scopes if s not in granted_roles]
-            if missing:
-              raise Exception(
-                  f"Missing Required Permissions for App {client_id[:5]}...: "
-                  f"{', '.join(missing)}\n"
-                  f"Current Assigned Roles: {', '.join(granted_roles)}\n"
-                  "Please grant these Application permissions in Azure Portal."
-              )
-          except Exception as e:
-            logger(f"Token Verification Failed: {e}")
-            raise
-
-        self.tokens.append(token_data)
-        for _ in range(self.concurrency):
-          self.token_queue.put(token_data)
-        logger(f"App {client_id[:5]}... authenticated & verified.")
-
-      except requests.exceptions.RequestException as e:
-        error_text = ""
-        if e.response is not None:
-          error_text = f": {e.response.text}"
-        logger(f"Auth Failed for app {client_id}: {e}{error_text}")
-        raise Exception(
-            "Authentication Failed. Check Client ID/Secret/Tenant. Details:"
-            f" {error_text}"
-        )
-      except Exception as e:
-        logger(f"Error for app {client_id}: {e}")
-        raise
-
-  def refresh_token_data(
-      self, token_data: Dict[str, Any], logger: Callable[[str], None]
-  ) -> bool:
-    """Refreshes a specific token dictionary in-place."""
-    url = TOKEN_URL_TEMPLATE.format(self.tenant_id)
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    data = {
-        "client_id": token_data["client_id"],
-        "scope": "https://graph.microsoft.com/.default",
-        "client_secret": token_data["client_secret"],
-        "grant_type": "client_credentials",
-    }
-    try:
-      resp = self.session.post(url, headers=headers, data=data)
-      resp.raise_for_status()
-      token_resp = resp.json()
-
-      token_data["token"] = token_resp["access_token"]
-      expires_in = token_resp.get("expires_in", 3599)
-      token_data["expires_at"] = time.time() + int(expires_in) - 900
-      return True
-    except Exception as e:
-      logger(f"Failed to refresh token: {e}")
-      return False
-
-  def get_valid_token_slot(
-      self, logger: Callable[[str], None]
-  ) -> Dict[str, Any]:
-    """Retrieves an available token, refreshing it if nearing expiration."""
-
-    token_data = self.token_queue.get()
-
-    if time.time() > token_data["expires_at"]:
-      logger(
-          f"Token expiring soon for App {token_data['client_id'][:5]}...,"
-          " refreshing..."
-      )
-      if self.refresh_token_data(token_data, logger):
-        logger(
-            "Successfully refreshed token for App"
-            f" {token_data['client_id'][:5]}..."
-        )
-    return token_data
-
-  def return_token_slot(self, token_data: Dict[str, Any]) -> None:
-    """Returns a token data object to the queue after use."""
-    self.token_queue.put(token_data)
-
-  def get_session(self) -> requests.Session:
-    """Returns the shared requests session."""
-    return self.session
+from util.auth_manager import TokenManager
 
 class UrlInvoker():
     def __init__(self, token_manager: TokenManager, batch_retry_count: int, batch_backoff: int, initial_delay: int, jitter: float):
@@ -217,7 +43,7 @@ class UrlInvoker():
         if logger is None:
             logger = lambda x: None
 
-        token_data = self.token_manager.get_valid_token_slot(logger)
+        token_data = self.token_manager.get_valid_token_slot()
         session = self.token_manager.get_session()
 
         batch_url = f"{url}/$batch"
@@ -349,7 +175,7 @@ class UrlInvoker():
                                 f"Individual items returned 401 in {context}. Refreshing token"
                                 " inline..."
                             )
-                            token_manager.refresh_token_data(token_data, logger)
+                            token_manager.refresh_token_data(token_data)
 
                         # If we have a specific Retry-After delay (retry_after_delay > 0), use it directly.
                         # Otherwise, use exponential backoff.
@@ -409,7 +235,7 @@ class UrlInvoker():
                         f"Batch 401 Unauthorized in {context}. Token expired. Refreshing"
                         " inline..."
                     )
-                    if token_manager.refresh_token_data(token_data, logger):
+                    if token_manager.refresh_token_data(token_data):
                         logger("Successfully refreshed token after 401.")
                     else:
                         logger("Failed to refresh token after 401. Will retry anyway.")

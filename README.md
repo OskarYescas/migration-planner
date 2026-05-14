@@ -1,6 +1,6 @@
 # Migration Planner Tool
 
-**Doc version: v1.0.0**
+**Doc version: v1.0.1**
 
 ## What's new
 

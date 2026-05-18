@@ -4,11 +4,13 @@ import hashlib
 import json
 import os
 import random
+import ssl
 import time
 import traceback
 import typing
 
 import aiohttp
+import certifi
 from chat.scanner import MigrationScanner
 import pandas as pd
 import requests
@@ -162,7 +164,7 @@ class ChatScannerService:
             source="channels",
             entity_type="Channels",
             progress=0.4 + 0.6 * (current_progress / max(1, total_len)),
-            extra_text=f"Analyzing Channels ({current_progress}/{total_len})",
+            extra_text=f"Scanning Channels ({current_progress}/{total_len})",
             processed=current_progress,
             failed=current_progress - stats["success_count"],
             cumulative=stats["messages"],
@@ -186,7 +188,10 @@ class ChatScannerService:
 
     session_token_data = auth.get_valid_token_slot()
     try:
-      connector = aiohttp.TCPConnector(limit=100, keepalive_timeout=30)
+      ssl_context = ssl.create_default_context(cafile=certifi.where())
+      connector = aiohttp.TCPConnector(
+          limit=100, keepalive_timeout=30, ssl=ssl_context
+      )
       async with aiohttp.ClientSession(connector=connector) as async_session:
         tasks = [
             asyncio.create_task(
@@ -253,6 +258,7 @@ class ChatScannerService:
             "User.Read.All",
             "Reports.Read.All",
             "Chat.Read.All",
+            "ChannelMessage.Read.All",
         ]
     )
 

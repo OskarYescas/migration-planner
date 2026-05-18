@@ -337,7 +337,7 @@ class MigrationEstimatorTool(ctk.CTk):
     source_selection_frame.pack(fill="x", anchor="w")
     ctk.CTkRadioButton(
         source_selection_frame,
-        text="Scan All Users",
+        text="Scan all teams and users",
         variable=self.user_source,
         value="tenant",
         border_color=COLOR_TEXT_SUB,

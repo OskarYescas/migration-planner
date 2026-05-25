@@ -168,8 +168,6 @@ class MigrationEstimatorTool(ctk.CTk):
     self.load_multiplier = ctk.IntVar(value=1)
     self.retries = ctk.IntVar(value=MAX_RETRIES)
     self.backoff = ctk.IntVar(value=BACKOFF)
-    self.eta_min_users = ctk.IntVar(value=50)
-    self.eta_max_users = ctk.IntVar(value=200)
     self.eta_max_batches = ctk.IntVar(value=50)
     self.parallel_batches = ctk.IntVar(value=10)
     self.scan_result_csv_path = ctk.StringVar()
@@ -509,24 +507,6 @@ class MigrationEstimatorTool(ctk.CTk):
         text_color=COLOR_TEXT_MAIN,
         width=40,
     ).grid(row=1, column=5, sticky="w", padx=5)
-
-    ctk.CTkLabel(
-        eta_settings_frame, text="Max Users/Batch:", text_color=COLOR_TEXT_SUB
-    ).grid(row=2, column=3, sticky="w", padx=5, pady=5)
-    slider_max_users = ctk.CTkSlider(
-        eta_settings_frame,
-        from_=50,
-        to=1000,
-        number_of_steps=19,
-        variable=self.eta_max_users,
-    )
-    slider_max_users.grid(row=2, column=4, sticky="ew", padx=5, pady=5)
-    ctk.CTkLabel(
-        eta_settings_frame,
-        textvariable=self.eta_max_users,
-        text_color=COLOR_TEXT_MAIN,
-        width=40,
-    ).grid(row=2, column=5, sticky="w", padx=5)
 
     ctk.CTkLabel(
         container,
@@ -1802,7 +1782,6 @@ class MigrationEstimatorTool(ctk.CTk):
         load_multiplier=self.load_multiplier.get(),
         retries=self.retries.get(),
         backoff=self.backoff.get(),
-        eta_max_users=self.eta_max_users.get(),
         parallel_batches=self.parallel_batches.get(),
         mode=self.mode.get(),
         sample_percentage=self.sample_percentage.get(),

@@ -227,7 +227,7 @@ class ChatEstimator(Estimator):
           else:
             high = mid - 1
 
-        chosen_size = max(1, chosen_size)
+        chosen_size = max(current_min, chosen_size)
         end_idx = start_idx + chosen_size
         b_eta = calculate_batch_eta_fast(start_idx, end_idx)
 

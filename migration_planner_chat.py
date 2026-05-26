@@ -163,7 +163,6 @@ class MigrationEstimatorTool(ctk.CTk):
     self.client_secrets = ctk.StringVar()
     self.user_source = ctk.StringVar(value="tenant")
     self.user_csv_path = ctk.StringVar()
-    self.scan_chat = ctk.BooleanVar(value=True)
     self.concurrency = ctk.IntVar(value=10)
     self.load_multiplier = ctk.IntVar(value=1)
     self.retries = ctk.IntVar(value=MAX_RETRIES)
@@ -364,24 +363,6 @@ class MigrationEstimatorTool(ctk.CTk):
         text_color=COLOR_TEXT_SUB,
     ).pack(side="left")
 
-  def _build_advanced_scan_options(self, container):
-    """Renders checkboxes for selectively disabling different workloads."""
-    ctk.CTkLabel(
-        container,
-        text="Scan Settings",
-        font=FONT_BODY_BOLD,
-        text_color=COLOR_TEXT_MAIN,
-    ).pack(anchor="w", padx=15, pady=(10, 15))
-    scan_options_frame = ctk.CTkFrame(container, fg_color="transparent")
-    scan_options_frame.pack(fill="x", padx=15)
-    ctk.CTkCheckBox(
-        scan_options_frame,
-        text="Chats",
-        variable=self.scan_chat,
-        corner_radius=4,
-        fg_color=COLOR_PRIMARY,
-        border_color=COLOR_TEXT_SUB,
-    ).pack(side="left", padx=10)
 
   def toggle_mode_options(self):
     """Dynamically lock/unlock sampling percentage input."""
@@ -591,7 +572,6 @@ class MigrationEstimatorTool(ctk.CTk):
 
     # Render modular sub-components inside advanced frame shell
     self._build_mode_selection(self.advanced_settings_frame)
-    self._build_advanced_scan_options(self.advanced_settings_frame)
     self._build_advanced_performance_settings(self.advanced_settings_frame)
     self._build_advanced_plan_options(self.advanced_settings_frame)
 
@@ -1684,13 +1664,12 @@ class MigrationEstimatorTool(ctk.CTk):
         self.scan_container, "users", "Scanning Users", is_user=True
     )
     self.prog_user.start()
-    if self.scan_chat.get():
-      self.create_progress_row(
-          self.scan_container, "chats", "Scanning Private Chats"
-      )
-      self.create_progress_row(
-          self.scan_container, "channels", "Scanning Channels"
-      )
+    self.create_progress_row(
+        self.scan_container, "chats", "Scanning Private Chats"
+    )
+    self.create_progress_row(
+        self.scan_container, "channels", "Scanning Channels"
+    )
 
     self.create_progress_row(
         self.scan_container, "plan_generation", "Generating Migration Plan"
@@ -1777,7 +1756,7 @@ class MigrationEstimatorTool(ctk.CTk):
         ],
         user_source=self.user_source.get(),
         csv_path=self.user_csv_path.get(),
-        scan_chat=self.scan_chat.get(),
+        scan_chat=True,
         concurrency=self.concurrency.get(),
         load_multiplier=self.load_multiplier.get(),
         retries=self.retries.get(),
@@ -1840,40 +1819,25 @@ class MigrationEstimatorTool(ctk.CTk):
             "CSV must contain 'User Principal Name' column."
         )
 
-    # 2. Determine if we need live scanning
-    scanning_required = config.scan_chat
+    # 2. Authenticate
+    if not manager:
+      if config.user_source == "tenant":
+        raise Exception("Missing Credentials for Tenant Scan.")
+      else:
+        raise Exception(
+            "Missing Credentials for Delta Scan (CSV missing some columns)."
+        )
+    # Determine scopes based on what is missing
+    required_scopes = ["User.Read.All"]
 
-    # 3. Authenticate if required
-    if scanning_required or config.user_source == "tenant":
-      if not manager:
-        # If we need to scan but have no manager (missing creds)
-        if config.user_source == "tenant":
-          raise Exception("Missing Credentials for Tenant Scan.")
-        else:
-          raise Exception(
-              "Missing Credentials for Delta Scan (CSV missing some columns)."
-          )
-      # Determine scopes based on what is missing
-      required_scopes = ["User.Read.All"]
-
-      manager.authenticate_all(required_scopes=required_scopes)
-    else:
-      self.log_msg(
-          "Skipping Authentication (All required data present in CSV)."
-      )
+    manager.authenticate_all(required_scopes=required_scopes)
 
     self.ui_update("user_discovery", status="Fetching...", count=0)
 
-    # 4. Resolve Users
+    # 3. Resolve Users
     if config.user_source == "csv":
-      if scanning_required:
-        self.log_msg("Delta Scan required. Resolving User IDs...")
-        all_users = self._resolve_from_csv(manager, users_to_resolve)
-      else:
-        self.log_msg("Using CSV data directly...")
-        all_users = [
-            {"userPrincipalName": u, "id": None} for u in users_to_resolve
-        ]
+      self.log_msg("Delta Scan required. Resolving User IDs...")
+      all_users = self._resolve_from_csv(manager, users_to_resolve)
     else:
       all_users = self._get_all_users_graph(manager)
 
@@ -1924,14 +1888,9 @@ class MigrationEstimatorTool(ctk.CTk):
       stats: Dict[str, int],
   ) -> None:
     """Executes the data fetching phases."""
-    can_scan = manager is not None
-    if config.scan_chat:
-      if can_scan:
-        self.ui_update("phase_status", source="chat", status="running")
-        self._run_chat_phase(config, stats)
-        self.ui_update("phase_status", source="chat", status="complete")
-      else:
-        self.log_msg("Skipping Chat Scan (No valid Authentication provided)")
+    self.ui_update("phase_status", source="chat", status="running")
+    self._run_chat_phase(config, stats)
+    self.ui_update("phase_status", source="chat", status="complete")
 
 
 

@@ -2028,7 +2028,7 @@ class MigrationEstimatorTool(ctk.CTk):
           continue
         batch_data = self.df_teams_output[self.df_teams_output["Suggested Batch"] == batch].copy()
         batch_export = batch_data[["Team ID"]].rename(
-            columns={"Team ID": "Source Team ID"}
+            columns={"Team ID": "Source MicrosoftTeamsID"}
         )
         safe_name = batch.replace(" ", "")
         batch_path = os.path.join(teams_batches_dir, f"{safe_name}.csv")

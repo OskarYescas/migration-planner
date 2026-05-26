@@ -323,7 +323,7 @@ Once the scan completes, the tool creates a folder in the `/outputs` directory n
 
 It contains:
 1.  **Teams Report (`teams_report_<timestamp>.csv`)**: Master list of analyzed Teams, IDs, channel counts, and assigned migration batch.
-2.  **Batch Files (`suggested teams batches/`)**: Individual CSV batch files formatted with the header **Source Team ID**.
+2.  **Batch Files (`suggested teams batches/`)**: Individual CSV batch files formatted with the header **Source MicrosoftTeamsID**.
 3.  **Logs (`logs_<timestamp>.log`)**: Detailed execution logs, including system performance (CPU/RAM) and any API errors encountered.
 
 You can also download just the log file via the **"Export logs"** button or the full report via the **"Export full report"** button and save them in a custom location on your system.

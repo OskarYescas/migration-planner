@@ -1,18 +1,21 @@
-from util.connectors import TokenManager, UrlInvoker
+from estimators.chat_estimator import ChatEstimator
+from estimators.eo_group_mailbox_estimator import EOGroupMailBoxEstimator
+from estimators.eo_in_place_archive_estimator import EOInPlaceArchiveEstimator
+from estimators.eo_shared_mailbox_estimator import EOSharedMailBoxEstimator
+from util.auth_manager import TokenManager
+from util.connectors import UrlInvoker
 from util.utils import ScanConfig
 
-from estimators.eo_group_mailbox_estimator import EOGroupMailBoxEstimator
-from estimators.eo_shared_mailbox_estimator import EOSharedMailBoxEstimator
-from estimators.eo_in_place_archive_estimator import EOInPlaceArchiveEstimator
 
-class EstimatorFactory():
+class EstimatorFactory:
+
   def __init__(
-    self,
-    manager: TokenManager,
-    config: ScanConfig,
-    logger,
-    stop_event,
-    id_to_display_name
+      self,
+      manager: TokenManager,
+      config: ScanConfig,
+      logger,
+      stop_event,
+      id_to_display_name,
   ):
     self.manager = manager
     self.config = config
@@ -23,18 +26,17 @@ class EstimatorFactory():
     self.group_mail_box_estimator = None
     self.in_place_archive_estimator = None
     self.url_invoker = None
+    self.chat_estimator = None
 
   def set_id_to_display_name(self, id_to_display_name):
-    self.id_to_display_name = id_to_display_name if id_to_display_name is not None else {}
+    self.id_to_display_name = (
+        id_to_display_name if id_to_display_name is not None else {}
+    )
 
   def get_url_invoker(self, hard_reset=False):
     if self.url_invoker is None or hard_reset:
       self.url_invoker = UrlInvoker(
-        self.manager,
-        self.config.retries,
-        self.config.backoff,
-        1,
-        0.5
+          self.manager, self.config.retries, self.config.backoff, 1, 0.5
       )
 
     return self.url_invoker
@@ -45,43 +47,66 @@ class EstimatorFactory():
         self.group_mail_box_estimator.shutdown()
       url_invoker = self.get_url_invoker()
       self.group_mail_box_estimator = EOGroupMailBoxEstimator(
-        self.config,
-        url_invoker,
-        logger=self.logger,
-        stop_event=self.stop_event
+          self.config,
+          url_invoker,
+          logger=self.logger,
+          stop_event=self.stop_event,
       )
-      self.group_mail_box_estimator.set_id_to_display_name_map(self.id_to_display_name)
-    
+      self.group_mail_box_estimator.set_id_to_display_name_map(
+          self.id_to_display_name
+      )
+
     return self.group_mail_box_estimator
 
   def get_shared_mailbox_estimator(self, hard_reset=False):
-    if self.shared_mail_box_estimator is None  or hard_reset:
+    if self.shared_mail_box_estimator is None or hard_reset:
       if self.shared_mail_box_estimator is not None:
         self.shared_mail_box_estimator.shutdown()
       url_invoker = self.get_url_invoker()
       self.shared_mail_box_estimator = EOSharedMailBoxEstimator(
-        self.config,
-        url_invoker,
-        logger=self.logger,
-        stop_event=self.stop_event
+          self.config,
+          url_invoker,
+          logger=self.logger,
+          stop_event=self.stop_event,
       )
-      self.shared_mail_box_estimator.set_id_to_display_name_map(self.id_to_display_name)
-    
+      self.shared_mail_box_estimator.set_id_to_display_name_map(
+          self.id_to_display_name
+      )
+
     return self.shared_mail_box_estimator
-  
-  def get_in_place_archive_estimator(self, use_delta_api=True, hard_reset=False):
+
+  def get_in_place_archive_estimator(
+      self, use_delta_api=True, hard_reset=False
+  ):
     if self.in_place_archive_estimator is None or hard_reset:
       if self.in_place_archive_estimator is not None:
         self.in_place_archive_estimator.shutdown()
       url_invoker = self.get_url_invoker()
       self.in_place_archive_estimator = EOInPlaceArchiveEstimator(
-        self.config,
-        url_invoker,
-        None,           # TODO Add support for non delta API based flow through factory
-        logger=self.logger,
-        stop_event=self.stop_event,
-        use_delta_api=use_delta_api
+          self.config,
+          url_invoker,
+          None,  # TODO Add support for non delta API based flow through factory
+          logger=self.logger,
+          stop_event=self.stop_event,
+          use_delta_api=use_delta_api,
       )
-      self.in_place_archive_estimator.set_id_to_display_name_map(self.id_to_display_name)
-    
+      self.in_place_archive_estimator.set_id_to_display_name_map(
+          self.id_to_display_name
+      )
+
     return self.in_place_archive_estimator
+
+  def get_chat_estimator(self, hard_reset=False):
+    if self.chat_estimator is None or hard_reset:
+      if self.chat_estimator is not None:
+        self.chat_estimator.shutdown()
+      url_invoker = self.get_url_invoker()
+      self.chat_estimator = ChatEstimator(
+          self.config,
+          url_invoker,
+          logger=self.logger,
+          stop_event=self.stop_event,
+      )
+      self.chat_estimator.set_id_to_display_name_map(self.id_to_display_name)
+    return self.chat_estimator
+

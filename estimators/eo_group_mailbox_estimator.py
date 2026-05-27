@@ -3,7 +3,8 @@ import threading
 from typing import Any, Callable, Dict, List, Optional
 
 from estimators.estimator import Estimator
-from util.connectors import TokenManager, UrlInvoker
+from util.auth_manager import TokenManager
+from util.connectors import UrlInvoker
 from util.utils import ScanConfig, create_batches, create_request_to_response_map, get_batch_responses_map, get_relative_url, process_pagination_responses, group_responses_by_key
 from util.enums import FailureType
 

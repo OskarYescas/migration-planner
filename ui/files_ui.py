@@ -55,7 +55,7 @@ def get_bucket_column_header(low, high):
 class FileMigrationEstimatorTool(MigrationEstimatorTool):
   def __init__(self):
     try:
-      self.show_eta = os.environ.get("SHOW_ETA", "false").lower() == "true"
+      self.show_eta = os.environ.get("SHOW_ETA", "true").lower() == "true"
     except:
       self.show_eta = False
 
@@ -66,6 +66,8 @@ class FileMigrationEstimatorTool(MigrationEstimatorTool):
     super().setup_variables()
     self.include_personal_sites = ctk.BooleanVar(value=True)
     self.include_team_sites = ctk.BooleanVar(value=False)
+    self.eta_min_users = ctk.IntVar(value=1000)
+    self.eta_max_users = ctk.IntVar(value=5000)
 
   def _is_valid_email(self, val):
     return bool(re.match(r'^[^@]+@[^@]+\.[^@]+$', val))
@@ -166,10 +168,6 @@ class FileMigrationEstimatorTool(MigrationEstimatorTool):
     
     # Concurrency settings
     ui_utils.build_concurrency_settings_slider(self, ctk, useConcurrencyHeading=True)
-
-    # Migration Plan Options
-    if self.show_eta:
-      ui_utils.build_migration_plan_options(self, ctk)
 
   def update_progress(self, msg):
     if isinstance(msg, str):
@@ -458,7 +456,7 @@ class FileMigrationEstimatorTool(MigrationEstimatorTool):
       df = pd.DataFrame(site_data)
       
       if self.show_eta:
-        df_final, batches_list, total_eta, buckets = self.calculate_migration_batches(df)
+        df_final, batches_list, total_eta, buckets = self.calculate_migration_batches(df, file_metrics.get("licenseMetrics", {}))
         
         file_metrics["batches"] = batches_list
         file_metrics["buckets"] = buckets
@@ -506,6 +504,7 @@ class FileMigrationEstimatorTool(MigrationEstimatorTool):
       
       # Create resolved copy of DataFrame for export to CSV and batches
       df_output = base_df.copy()
+      original_site_ids = df_output["Site Id"].copy()
       df_output["Site Id"] = df_output["Site Id"].apply(self._get_display_name)
       df_output["Corpus Size"] = df_output["Corpus Size"].apply(self.format_size)
       df_output.rename(columns={"Site Id": "Site URL/Name"}, inplace=True)
@@ -525,9 +524,15 @@ class FileMigrationEstimatorTool(MigrationEstimatorTool):
           if not batch:
             continue
           batch_data = df_output[df_output["Suggested Batch"] == batch].copy()
-          batch_export = batch_data[["Site URL/Name"]].rename(
-              columns={"Site URL/Name": "Source SharePoint Site ID/URL"}
-          )
+          mapping = file_metrics.get("siteIdToMail")
+          if mapping:
+            batch_orig_ids = original_site_ids.loc[batch_data.index]
+            entities = batch_orig_ids.map(mapping).fillna(batch_data["Site URL/Name"])
+            batch_export = pd.DataFrame({"Entity": entities})
+          else:
+            batch_export = batch_data[["Site URL/Name"]].rename(
+                columns={"Site URL/Name": "Entity"}
+            )
           safe_name = batch.replace(" ", "")
           batch_path = os.path.join(batches_dir, f"{safe_name}.csv")
           batch_export.to_csv(batch_path, index=False)
@@ -560,7 +565,7 @@ class FileMigrationEstimatorTool(MigrationEstimatorTool):
   def build_results_view(self):
     super().build_results_view()
 
-  def calculate_migration_batches(self, df):
+  def calculate_migration_batches(self, df, licenseMetrics):
     # Ensure numeric columns
     if "Resource Count" not in df.columns:
       df["Resource Count"] = 0
@@ -594,6 +599,22 @@ class FileMigrationEstimatorTool(MigrationEstimatorTool):
     min_batches_seen = float("inf")
 
     def get_batch_eta(subset_df):
+      def _get_qps_from_license_count():
+        # Calculate number of licenses required
+        license_count = licenseMetrics.get("totalAllotedUnits", {}).get("User", 0) + licenseMetrics.get("totalAllotedUnits", {}).get("Company", 0)
+        if license_count <= 1000:
+          qps = 4.8
+        elif license_count <= 5000:
+          qps = 9.6
+        elif license_count <= 15000:
+          qps = 14.4
+        elif license_count <= 50000:
+          qps = 19.2
+        else:
+          qps = 24
+        
+        return qps
+
       estimator = self.factory.get_files_estimator()
       items = []
       for _, row in subset_df.iterrows():
@@ -606,7 +627,7 @@ class FileMigrationEstimatorTool(MigrationEstimatorTool):
         
       data = {
         "items": items,
-        "FILES_GLOBAL_COUNT_LIMIT": FILES_GLOBAL_COUNT_LIMIT,
+        "FILES_GLOBAL_COUNT_LIMIT": _get_qps_from_license_count(),
         "FILES_GLOBAL_CORPUS_SIZE_LIMIT": FILES_GLOBAL_CORPUS_SIZE_LIMIT,
       }
       return estimator.calculate_migration_eta(data)
@@ -1246,7 +1267,10 @@ class FileMigrationEstimatorTool(MigrationEstimatorTool):
     if not self.include_personal_sites.get() and not self.include_team_sites.get():
       messagebox.showerror("Validation Error", "At least one site type (Personal (OneDrive) or SharePoint) must be selected!")
       return
-      
+
+    # ETA to be only shown for OneDrive sites atm
+    self.show_eta = (os.environ.get("SHOW_ETA", "true").lower() == "true") and (self.include_personal_sites.get() and not self.include_team_sites.get())  
+    
     if self.user_source.get() == "csv":
       self._validate_csv()
 

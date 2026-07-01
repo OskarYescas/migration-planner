@@ -2604,9 +2604,10 @@ class MigrationEstimatorTool(ctk.CTk):
     # TODO Remove the need to provide config when only ETA is needed
     # Helper: Calculate ETA for subset
     config = self._get_scan_configuration()
-    in_place_archive_estimator = None
-    if ENABLE_IN_PLACE_ARCHIVE_ETA and self.factory.one_token_per_app_manager is not None:
-      in_place_archive_estimator = self.factory.get_in_place_archive_estimator(use_delta_api=True)
+    if ENABLE_IN_PLACE_ARCHIVE_ETA:
+      # hard_reset=False --> Re-use existing IPA estimator if available
+      # use_for_eta_calc=True --> Doesn't try to initialize the token managers
+      in_place_archive_estimator = self.factory.get_in_place_archive_estimator(use_delta_api=True, hard_reset=False, use_for_eta_calc=True)
     if ENABLE_SHARED_MAILBOX_ETA:
       shared_mail_box_estimator = self.factory.get_shared_mailbox_estimator()
     if ENABLE_GROUP_MAILBOX_ETA:
